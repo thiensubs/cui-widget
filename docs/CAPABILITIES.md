@@ -31,6 +31,8 @@ Two rules govern this table:
 | percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | % width & height resolve against the containing block; % height needs a definite parent height (CSS 10.5) |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | runs of inline siblings (text, span/em/strong/a/…) flow on shared line boxes and wrap as a unit; per-segment color/weight |
 | tables | `CUIW_FEATURE_TABLES` | `table`/`tr`/`td`/`th`, auto column widths, `colspan`, row heights, cell stretch; no `rowspan` yet |
+| overflow-scroll | `CUIW_FEATURE_OVERFLOW_SCROLL` | `overflow: hidden` clips descendant content (text + children) to the padding box; `visible` does not. Content is clipped, not scrolled |
+| text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
 
 **Not yet — 14**
 
@@ -43,8 +45,6 @@ Two rules govern this table:
 | media-queries | `CUIW_FEATURE_MEDIA_QUERIES` | none |
 | transitions | `CUIW_FEATURE_TRANSITIONS` | static styles only |
 | keyframes | `CUIW_FEATURE_KEYFRAMES` | no animation |
-| overflow-scroll | `CUIW_FEATURE_OVERFLOW_SCROLL` | content is laid out, not scrolled |
-| text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | no underline/line-through |
 | opacity-compositing | `CUIW_FEATURE_OPACITY_COMPOSITING` | alpha not composited per-node |
 | pseudo-classes | `CUIW_FEATURE_PSEUDO_CLASSES` | `:disabled` only |
 | canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |

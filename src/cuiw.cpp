@@ -178,7 +178,10 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_FONT_WEIGHT:
         case CUIW_FEATURE_MIN_HEIGHT:
         case CUIW_FEATURE_PERCENT_HEIGHT:
+        case CUIW_FEATURE_INLINE_LAYOUT:
         case CUIW_FEATURE_TABLES:
+        case CUIW_FEATURE_OVERFLOW_SCROLL:
+        case CUIW_FEATURE_TEXT_DECORATION:
             return true;
         default:
             return false;

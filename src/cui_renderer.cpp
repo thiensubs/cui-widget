@@ -135,6 +135,8 @@ std::vector<double> boxValues(const std::string& v) {
 enum class Display { Block, Flex, Inline, Table, TableRowGroup, TableRow, TableCell, None };
 enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
+enum class TextDecoration { None, Underline, LineThrough };
+enum class Overflow { Visible, Hidden };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
 enum class TextAlign { Left, Center, Right };
@@ -162,6 +164,8 @@ struct Style {
     int font_weight = 400;
     bool bold = false;
     bool disabled = false;
+    TextDecoration text_decoration = TextDecoration::None;
+    Overflow overflow = Overflow::Visible;
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
@@ -222,6 +226,14 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         if (value.find("bold") != std::string::npos) { st.bold = true; st.font_weight = 700; }
         else { int w = std::atoi(value.c_str()); if (w) { st.font_weight = w; st.bold = w >= 600; } }
     } else if (is("opacity")) { /* compositing not yet supported */ }
+    else if (is("text-decoration")) {
+        if (value.find("underline") != std::string::npos) st.text_decoration = TextDecoration::Underline;
+        else if (value.find("line-through") != std::string::npos) st.text_decoration = TextDecoration::LineThrough;
+        else st.text_decoration = TextDecoration::None;
+    } else if (is("overflow")) {
+        // hidden / clip / auto / scroll all clip content; visible does not.
+        st.overflow = value.find("visible") != std::string::npos ? Overflow::Visible : Overflow::Hidden;
+    }
 }
 
 // Applies a declaration block ("color:#222;padding:14px") to a style.
@@ -453,6 +465,10 @@ void computeStyle(Doc& d, int64_t id) {
         // text color; the parent's (possibly author-set) color overrides it here,
         // and this node's own author/inline declarations override that below.
         n.style.color = p->style.color;
+        // text-decoration propagates to descendants the way color does: the span
+        // carries underline/line-through, but the text is drawn by the child text
+        // node, which must inherit the decoration to draw the line.
+        n.style.text_decoration = p->style.text_decoration;
     }
     // Author rules: tag rules, then class rules, then id rules (later wins).
     for (const Rule& r : d.sheet) {
@@ -1083,6 +1099,19 @@ struct CuiRenderer::Impl {
 
     // ───────────── paint ─────────────
 
+    void drawTextDecoration(const Style& s, double x, double y_top, double width) {
+        if (s.text_decoration == TextDecoration::None || width <= 0) return;
+        float thickness = (float)std::max(1.0, s.font_size / 16.0);
+        double ly = (s.text_decoration == TextDecoration::Underline)
+                        ? y_top + s.font_size * 0.92
+                        : y_top + s.font_size * 0.55;
+        cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
+                       (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
+                       (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
+        cui_draw_line(ui, cui_vec2{ (float)x, (float)ly }, cui_vec2{ (float)(x + width), (float)ly },
+                      thickness, col);
+    }
+
     void paintNode(int64_t id) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) return;
@@ -1125,15 +1154,29 @@ struct CuiRenderer::Impl {
                 cui_draw_rect(ui, r, rad, bg);
             }
         }
+        // overflow: hidden|scroll|auto clips content (text + children) to the
+        // padding box. Background/border above are painted unclipped, matching
+        // CSS — only descendant content is cut at the rounded edge.
+        const bool clips = (s.overflow == Overflow::Hidden && n.w > 0 && n.h > 0);
+        if (clips) {
+            double pad_t = s.pad[0] + s.border, pad_r = s.pad[1] + s.border;
+            double pad_b = s.pad[2] + s.border, pad_l = s.pad[3] + s.border;
+            cui_rect cr{ (float)(n.x + pad_l), (float)(n.y + pad_t),
+                         (float)std::max(0.0, n.w - pad_l - pad_r),
+                         (float)std::max(0.0, n.h - pad_t - pad_b) };
+            cui_push_clip(ui, cr);
+        }
         if (n.kind == Node::Text && !n.segs.empty()) {
             // Inline flow: draw positioned segments, each at its own (x, y).
             cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
                            (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
                            (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
             for (const auto& sg : n.segs)
-                if (!sg.text.empty())
+                if (!sg.text.empty()) {
                     cui_draw_text(ui, fontFor(s), (float)s.font_size,
                                   cui_vec2{ (float)sg.x, (float)sg.y }, col, sg.text.c_str(), -1);
+                    drawTextDecoration(s, sg.x, sg.y, sg.w);
+                }
         }
         else if (n.kind == Node::Text && !n.lines.empty()) {
             cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
@@ -1153,11 +1196,13 @@ struct CuiRenderer::Impl {
                     }
                     cui_draw_text(ui, fontFor(s), (float)s.font_size,
                                   cui_vec2{ (float)tx, (float)ty }, col, ln.text.c_str(), -1);
+                    drawTextDecoration(s, tx, ty, ln.width);
                 }
                 ty += n.line_height_px;
             }
         }
         for (int64_t c : n.children) paintNode(c);
+        if (clips) cui_pop_clip(ui);
     }
 
     cui_color bubbleColor() const {
