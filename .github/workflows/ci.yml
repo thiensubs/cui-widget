@@ -95,6 +95,16 @@ jobs:
             ${{ matrix.extra }} -DCMAKE_BUILD_TYPE=Release -DCUI_ROOT="$CUI_ROOT"
           cmake --build build --config Release
 
+      # The transition self-check: drives a color transition on a frozen virtual
+      # clock and asserts the mid-frame interpolates. No sleeping, no wall-clock,
+      # so it is deterministic on every OS and catches a silent transition
+      # regression (a broken easing, a jump-to-target, a run that never retires).
+      - name: Run the transition self-check
+        shell: bash
+        run: |
+          if [ -f build/cuiw-transitions ]; then T=build/cuiw-transitions; else T=build/cuiw-transitions.exe; fi
+          "$T"
+
       - name: Render the reference widget app
         shell: bash
         run: |
