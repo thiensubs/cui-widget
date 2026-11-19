@@ -14,12 +14,13 @@ Two rules govern this table:
 
 ## The matrix
 
-**Supported — 9**
+**Supported — 10**
 
 | feature | enum | notes |
 | --- | --- | --- |
 | block layout | `CUIW_FEATURE_BLOCK` | vertical flow, margins, padding |
 | flex layout | `CUIW_FEATURE_FLEX` | row & column, gaps, alignment, flex-grow |
+| flex-wrap | `CUIW_FEATURE_FLEX_WRAP` | `wrap` breaks row items into lines that fit; per-line justify + cross-align |
 | id selector | `CUIW_FEATURE_ID_SELECTOR` | `#id` |
 | class selector | `CUIW_FEATURE_CLASS_SELECTOR` | `.class` |
 | tag selector | `CUIW_FEATURE_TAG_SELECTOR` | element name |
@@ -28,11 +29,10 @@ Two rules govern this table:
 | font-weight | `CUIW_FEATURE_FONT_WEIGHT` | normal / bold |
 | min-height | `CUIW_FEATURE_MIN_HEIGHT` | per-node minimum block size |
 
-**Not yet — 17**
+**Not yet — 16**
 
 | feature | enum | status |
 | --- | --- | --- |
-| flex-wrap | `CUIW_FEATURE_FLEX_WRAP` | single-line flex only |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | not implemented |
 | percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | percent *width* works; height does not |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | inline flow / inline-block |

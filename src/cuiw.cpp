@@ -169,6 +169,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         // The layout engine's supported set (see docs/cui-renderer.md).
         case CUIW_FEATURE_BLOCK:
         case CUIW_FEATURE_FLEX:
+        case CUIW_FEATURE_FLEX_WRAP:
         case CUIW_FEATURE_ID_SELECTOR:
         case CUIW_FEATURE_CLASS_SELECTOR:
         case CUIW_FEATURE_TAG_SELECTOR:

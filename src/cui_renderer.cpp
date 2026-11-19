@@ -124,6 +124,7 @@ std::vector<double> boxValues(const std::string& v) {
 
 enum class Display { Block, Flex, None };
 enum class FlexDir { Row, Column };
+enum class FlexWrap { NoWrap, Wrap };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
 enum class TextAlign { Left, Center, Right };
@@ -131,6 +132,7 @@ enum class TextAlign { Left, Center, Right };
 struct Style {
     Display display = Display::Block;
     FlexDir flex_dir = FlexDir::Row;
+    FlexWrap flex_wrap = FlexWrap::NoWrap;
     Justify justify = Justify::Start;
     Align align = Align::Stretch;
     TextAlign text_align = TextAlign::Left;
@@ -161,6 +163,9 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         else st.display = Display::Block;
     } else if (is("flex-direction")) {
         st.flex_dir = value.find("column") != std::string::npos ? FlexDir::Column : FlexDir::Row;
+    } else if (is("flex-wrap")) {
+        // wrap / wrap-reverse wrap; nowrap (the default) does not.
+        st.flex_wrap = value.find("wrap") != std::string::npos ? FlexWrap::Wrap : FlexWrap::NoWrap;
     } else if (is("justify-content")) {
         if (value.find("space-between") != std::string::npos) st.justify = Justify::Between;
         else if (value.find("center") != std::string::npos) st.justify = Justify::Center;
@@ -590,6 +595,63 @@ struct CuiRenderer::Impl {
                 ks.push_back(k);
                 total_main += k.main;
             }
+            if (row && s.flex_wrap == FlexWrap::Wrap) {
+                // Greedily pack items into lines that fit avail_inner. Each line is
+                // laid out independently: its own cursor (justified within the line)
+                // and its own cross size; lines stack down the cross axis.
+                double gap = s.gap;
+                std::vector<std::vector<size_t>> lines;
+                std::vector<size_t> cur;
+                double cur_w = 0;
+                for (size_t i = 0; i < ks.size(); i++) {
+                    double add = ks[i].main + (cur.empty() ? 0 : gap);
+                    if (!cur.empty() && cur_w + add > avail_inner + 0.5) {
+                        lines.push_back(cur);
+                        cur.clear(); cur_w = 0;
+                        add = ks[i].main;
+                    }
+                    cur.push_back(i);
+                    cur_w += add;
+                }
+                if (!cur.empty()) lines.push_back(cur);
+
+                double child_avail_cross = s.height >= 0 ? s.height - s.pad[0] - s.pad[2] : 0;
+                child_avail_cross = child_avail_cross > 0 ? child_avail_cross : avail_inner;
+                double cross_cursor = y + s.pad[0] + s.border;
+                double inner = 0;
+                for (auto& ln : lines) {
+                    double line_main = 0;
+                    for (size_t j = 0; j < ln.size(); j++)
+                        line_main += ks[ln[j]].main + (j ? gap : 0);
+                    double line_free = avail_inner - line_main;
+                    double cursor = 0;
+                    if (s.justify == Justify::Center) cursor = line_free / 2;
+                    else if (s.justify == Justify::End) cursor = line_free;
+                    double between = (s.justify == Justify::Between && ln.size() > 1)
+                                         ? line_free / (ln.size() - 1) : 0;
+                    double line_cross = 0;
+                    for (size_t j = 0; j < ln.size(); j++) {
+                        Node& c = doc.nodes[ks[ln[j]].id];
+                        double ch = layoutNode(ks[ln[j]].id, cx + cursor, cross_cursor,
+                                               child_avail_cross, ks[ln[j]].main);
+                        c.y = cross_cursor;
+                        line_cross = std::max(line_cross, ch);
+                        cursor += ks[ln[j]].main + gap + between;
+                    }
+                    // cross-axis alignment within this line
+                    for (size_t j : ln) {
+                        Node& c = doc.nodes[ks[j].id];
+                        double dy = 0;
+                        if (s.align == Align::Center) dy = (line_cross - c.h) / 2;
+                        else if (s.align == Align::End) dy = line_cross - c.h;
+                        if (dy) shiftY(ks[j].id, dy);
+                    }
+                    cross_cursor += line_cross + gap;
+                    inner += line_cross + gap;
+                }
+                if (inner > 0) inner -= gap;   // no trailing gap between lines
+                inner_h = inner;
+            } else {
             double gaps = ks.empty() ? 0 : s.gap * (ks.size() - 1);
             double free_main = (row ? avail_inner : 0) - total_main - gaps;
             // distribute free space on the main axis (row only; a column grows downward)
@@ -641,6 +703,7 @@ struct CuiRenderer::Impl {
                     if (dy) shiftY(cid, dy);
                 }
             }
+            } // end non-wrap flex path
         } else {
             // Block flow: children stack vertically; block children fill, inline
             // (text) children wrap.
