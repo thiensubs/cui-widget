@@ -1019,6 +1019,10 @@ struct CuiRenderer::Impl {
                 if (!c_inline) {
                     double child_avail = avail_inner;
                     double used_w = c.style.width >= 0 ? c.style.width : avail_inner;
+                    // Record the block child's box top before laying it out —
+                    // layoutNode sets x/w but not y, so without this every block
+                    // sibling kept y=0 and stacked boxes overlapped.
+                    c.y = cy + c.style.margin[0];
                     double h = layoutNode(cid, cx, cy, child_avail, -1, definite_content_h);
                     if (c.w < used_w && s.align == Align::Center) shiftX(cid, (used_w - c.w) / 2);
                     cy += h + c.style.margin[0] + c.style.margin[2];
