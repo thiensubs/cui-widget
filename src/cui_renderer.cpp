@@ -178,6 +178,10 @@ struct Style {
     // top/right/bottom/left offsets. -1 = unset (auto). Resolved against the
     // nearest positioned ancestor's padding box at layout time.
     double top = -1, right = -1, bottom = -1, left = -1;
+    // Resolved CSS custom properties (--name -> value) visible on this node:
+    // declared here or inherited from the nearest ancestor that declares them.
+    // Populated during computeStyle, before var() references are substituted.
+    std::map<std::string, std::string> custom_props;
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
@@ -277,25 +281,8 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     }
 }
 
-// Applies a declaration block ("color:#222;padding:14px") to a style.
-void applyBlock(Style& st, const std::string& block) {
-    std::string name, value;
-    bool inValue = false;
-    auto commit = [&] {
-        if (!name.empty()) applyDecl(st, name, value);
-        name.clear(); value.clear(); inValue = false;
-    };
-    for (char c : block) {
-        if (c == ':') inValue = true;
-        else if (c == ';') commit();
-        else if (inValue) { if (!std::isspace((unsigned char)c) || !value.empty()) value.push_back(c); }
-        else if (!std::isspace((unsigned char)c)) name.push_back((char)std::tolower((unsigned char)c));
-    }
-    commit();
-}
-
 // A stylesheet rule whose selector is a tag, a ".class" or a "#id" (the profile subset).
-struct Rule { std::string tag, cls, id; Decls decls; bool disabled = false; };
+struct Rule { std::string tag, cls, id; Decls decls; bool disabled = false; bool is_root = false; };
 
 void parseSheet(const std::string& css, std::vector<Rule>& out) {
     size_t i = 0;
@@ -322,11 +309,14 @@ void parseSheet(const std::string& css, std::vector<Rule>& out) {
             // Trim, strip a trailing pseudo (:hover / :disabled handled separately).
             std::string s;
             for (char c : sel) if (!std::isspace((unsigned char)c)) s.push_back(c);
+            // :root (optionally with a trailing pseudo) matches the document root.
+            bool isRoot = s.compare(0, 5, ":root") == 0;
             size_t colon = s.find(':');
             bool hasDisabled = colon != std::string::npos && s.compare(colon, 9, ":disabled") == 0;
             if (colon != std::string::npos) s = s.substr(0, colon);
             Rule r;
-            if (!s.empty() && s[0] == '.') r.cls = s.substr(1);
+            if (isRoot) r.is_root = true;
+            else if (!s.empty() && s[0] == '.') r.cls = s.substr(1);
             else if (!s.empty() && s[0] == '#') r.id = s.substr(1);
             else r.tag = s;
             r.decls = parseDecls(body);
@@ -388,6 +378,52 @@ Decls parseDecls(const std::string& body) {
     }
     commit();
     return d;
+}
+
+// Substitute var() references in a CSS property value against a node's resolved
+// custom properties. Supports var(--name) and var(--name, <fallback>). Unresolved
+// references with no fallback make the whole declaration invalid (returns false),
+// matching CSS: the property is then treated as unset rather than mis-rendered.
+bool resolveVarRefs(const std::map<std::string, std::string>& props,
+                    const std::string& value, std::string& out) {
+    out.clear();
+    size_t i = 0;
+    while (i < value.size()) {
+        if (value.compare(i, 4, "var(") == 0) {
+            size_t start = i + 4;
+            int depth = 1; size_t p = start;
+            for (; p < value.size() && depth > 0; p++) {
+                if (value[p] == '(') depth++;
+                else if (value[p] == ')') depth--;
+            }
+            if (depth != 0) return false;              // unbalanced var(
+            std::string inner = value.substr(start, p - 1 - start);
+            // Split the first top-level comma: --name, fallback.
+            std::string name, fallback;
+            int d2 = 0; bool comma = false;
+            for (char ch : inner) {
+                if (ch == '(') d2++;
+                else if (ch == ')') d2--;
+                else if (ch == ',' && d2 == 0) { comma = true; continue; }
+                if (comma) fallback.push_back(ch);
+                else name.push_back(ch);
+            }
+            auto trim = [](std::string& s) {
+                size_t a = s.find_first_not_of(" \t");
+                size_t b = s.find_last_not_of(" \t");
+                s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
+            };
+            trim(name); trim(fallback);
+            auto it = props.find(name);
+            if (it != props.end()) out += it->second;
+            else if (comma) { std::string fb; if (!resolveVarRefs(props, fallback, fb)) return false; out += fb; }
+            else return false;                          // unresolved, no fallback
+            i = p;
+        } else {
+            out.push_back(value[i++]);
+        }
+    }
+    return true;
 }
 
 Node* node(Doc& d, int64_t id) {
@@ -518,17 +554,40 @@ void computeStyle(Doc& d, int64_t id) {
         n.style.valign = p->style.valign;
         n.style.valign_shift = p->style.valign_shift;
     }
-    // Author rules: tag rules, then class rules, then id rules (later wins).
+    // Custom properties inherit parent->child (CSS 15.3). The parent's set is
+    // already final here (computeStyleAll walks parent-before-child).
+    if (n.parent) if (Node* p = node(d, n.parent))
+        n.style.custom_props = p->style.custom_props;
+
+    // Gather every declaration that applies to this node — matching rules then
+    // inline style — in one pass. Custom properties (--name) are collected into
+    // custom_props first so a var() in any value can reference a --name declared
+    // anywhere on the element (CSS resolves custom props before substituting).
+    Decls all;
     for (const Rule& r : d.sheet) {
-        bool match = (!r.tag.empty() && r.tag == n.tag) || (!r.cls.empty() && hasClass(n, r.cls))
-                   || (!r.id.empty() && getAttr(n, "id") == r.id);
+        bool match = r.is_root ? (n.tag == "body")
+                   : ((!r.tag.empty() && r.tag == n.tag) || (!r.cls.empty() && hasClass(n, r.cls))
+                   || (!r.id.empty() && getAttr(n, "id") == r.id));
         if (!match) continue;
         if (r.disabled && !n.style.disabled) continue;
-        for (const auto& kv : r.decls.kv) applyDecl(n.style, kv.first, kv.second);
+        for (const auto& kv : r.decls.kv) all.kv.push_back(kv);
     }
-    // Inline style wins.
     for (const auto& a : n.attrs)
-        if (a.first == "style") applyBlock(n.style, a.second);
+        if (a.first == "style")
+            for (const auto& kv : parseDecls(a.second).kv) all.kv.push_back(kv);
+
+    for (const auto& kv : all.kv)
+        if (kv.first.size() > 1 && kv.first[0] == '-' && kv.first[1] == '-')
+            n.style.custom_props[kv.first] = kv.second;
+
+    // Apply normal declarations with var() references resolved. An unresolved
+    // var() with no fallback makes that declaration invalid (CSS: treated as unset).
+    for (const auto& kv : all.kv) {
+        if (kv.first.size() > 1 && kv.first[0] == '-' && kv.first[1] == '-') continue;
+        std::string resolved;
+        if (!resolveVarRefs(n.style.custom_props, kv.second, resolved)) continue;
+        applyDecl(n.style, kv.first, resolved);
+    }
     if (n.style.bold && n.style.font_weight < 600) n.style.font_weight = 700;
     // A button with no author background gets the UA button token.
     if (n.tag == "button" && n.style.bg.a == 0 && n.style.border == 0) applyUaButtonTokens(n.style, d.theme == "dark");
