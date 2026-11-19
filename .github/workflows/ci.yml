@@ -45,7 +45,7 @@ jobs:
             extra: ""
           - os: windows-2022
             name: MSVC
-            generator: "Visual Studio 17 2022"
+            generator: Ninja
             extra: ""
 
     steps:
@@ -70,6 +70,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      # Windows: Ninja + MSVC. msvc-dev-cmd puts cl.exe/link.exe on PATH for the
+      # later cmake steps; Ninja keeps the build single-config so libcui lands at
+      # build/libcui.lib (the Visual Studio generator would put it in build/Release/).
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y --no-progress
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Build CUI (libcui)
         shell: bash
         run: |
@@ -89,7 +100,9 @@ jobs:
         run: |
           mkdir -p actual
           # Headless: paints through CUI's software rasterizer, no display.
-          ./build/widget-app actual 2>&1 | tee render.log
+          # Ninja emits a plain binary on Unix, a .exe on Windows.
+          if [ -f build/widget-app ]; then APP=build/widget-app; else APP=build/widget-app.exe; fi
+          "$APP" actual 2>&1 | tee render.log
           test -f actual/widget-light.png
           test -f actual/widget-dark.png
 
@@ -100,7 +113,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          PXDIFF=$(find build -name 'pxdiff*' -type f | head -1)
+          # Resolve the pxdiff executable (Ninja: build/pxdiff on Unix, build/pxdiff.exe on
+          # Windows). Match on the plain name so the .o/.obj object files are never picked.
+          if [ -f build/pxdiff ]; then PXDIFF=build/pxdiff; else PXDIFF=build/pxdiff.exe; fi
           "$PXDIFF" tests/golden/widget-light.png actual/widget-light.png --diff actual/diff-light.png
           "$PXDIFF" tests/golden/widget-dark.png  actual/widget-dark.png  --diff actual/diff-dark.png
 
