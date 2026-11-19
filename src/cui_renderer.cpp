@@ -299,6 +299,9 @@ struct Rule {
     // (the profile's flat markup uses at most one per selector).
     enum Pseudo { None, FirstChild, LastChild, NthChild } pseudo = None;
     int nth_a = 0, nth_b = 0;   // :nth-child(an+b); a=0 -> the single index b
+    // Enclosing @media constraint, evaluated against the document's current CSS
+    // width at match time. -1 = unconstrained. Supports min-width / max-width.
+    double media_min = -1, media_max = -1;
 };
 
 // Case-insensitive compare of a trimmed pseudo name.
@@ -343,7 +346,46 @@ static Rule::Pseudo parsePseudo(const std::string& raw, int& a, int& b) {
     return Rule::None;
 }
 
-void parseSheet(const std::string& css, std::vector<Rule>& out) {
+// Parse the width constraints out of an @media condition such as
+// "(min-width: 400px)" or "(min-width: 320px) and (max-width: 600px)". Only
+// min-width / max-width are modeled; other features (orientation, …) are ignored.
+// Unrecognized constraints make the whole query not match (returns false) so a
+// widget doesn't apply a rule we can't evaluate.
+bool parseMediaWidth(const std::string& cond, double& mn, double& mx) {
+    mn = -1; mx = -1;
+    std::string s;
+    for (char c : cond) s.push_back((char)std::tolower((unsigned char)c));
+    bool sawAny = false, allKnown = true;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t open = s.find('(', i);
+        if (open == std::string::npos) break;
+        size_t close = s.find(')', open);
+        if (close == std::string::npos) return false;
+        std::string feat = s.substr(open + 1, close - open - 1);
+        i = close + 1;
+        size_t colon = feat.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = feat.substr(0, colon);
+        std::string val = feat.substr(colon + 1);
+        auto trim = [&](std::string& t) {
+            size_t a = t.find_first_not_of(" \t");
+            size_t b = t.find_last_not_of(" \t");
+            t = (a == std::string::npos) ? "" : t.substr(a, b - a + 1);
+        };
+        trim(name); trim(val);
+        double px; char end = 0;
+        if (std::sscanf(val.c_str(), "%lf%c", &px, &end) < 1) { allKnown = false; continue; }
+        sawAny = true;
+        if (name == "min-width") mn = px;
+        else if (name == "max-width") mx = px;
+        else allKnown = false;
+    }
+    return sawAny && allKnown;
+}
+
+void parseSheet(const std::string& css, std::vector<Rule>& out,
+                double media_min = -1, double media_max = -1) {
     size_t i = 0;
     auto skipBlock = [&](size_t p) {
         int depth = 0;
@@ -359,10 +401,20 @@ void parseSheet(const std::string& css, std::vector<Rule>& out) {
         std::string sel = css.substr(i, brace - i);
         size_t end = skipBlock(brace);
         std::string body = css.substr(brace + 1, end - brace - 2);
-        // Skip at-rules (@media, @keyframes) and selectors with combinators we
-        // do not model; a descendant selector's last simple selector is applied
-        // to every match, which is close enough for the profile's flat markup.
-        if (!sel.empty() && sel[0] == '@') { i = end; continue; }
+        // @media: parse the width constraint and recurse into the block so the
+        // inner rules carry it. Other at-rules (@keyframes) are still skipped.
+        if (!sel.empty() && sel[0] == '@') {
+            std::string head = sel.substr(0, brace - i);
+            if (head.compare(0, 6, "@media") == 0) {
+                std::string cond = head.substr(6);
+                double mn, mx;
+                if (parseMediaWidth(cond, mn, mx))
+                    parseSheet(body, out, mn, mx);
+                // An unevaluable @media (orientation, …) is dropped entirely.
+            }
+            i = end;
+            continue;
+        }
         for (char c : sel) if (c == '>' || c == '+' || c == '~') { i = end; goto next; }
         {
             // Trim, strip a trailing pseudo (:hover / :disabled handled separately).
@@ -385,6 +437,8 @@ void parseSheet(const std::string& css, std::vector<Rule>& out) {
             else r.tag = s;
             r.decls = parseDecls(body);
             r.disabled = hasDisabled;
+            r.media_min = media_min;
+            r.media_max = media_max;
             out.push_back(std::move(r));
         }
     next:
@@ -669,6 +723,10 @@ void computeStyle(Doc& d, int64_t id) {
                    || (!r.id.empty() && getAttr(n, "id") == r.id));
         if (!match) continue;
         if (!matchesPseudo(d, n, r)) continue;
+        // @media gate: the rule only applies when the document's current CSS
+        // width satisfies its min/max-width constraint (CSS 9; mobile-first).
+        if (r.media_min >= 0 && d.width < r.media_min) continue;
+        if (r.media_max >= 0 && d.width > r.media_max) continue;
         if (r.disabled && !n.style.disabled) continue;
         for (const auto& kv : r.decls.kv) all.kv.push_back(kv);
     }
