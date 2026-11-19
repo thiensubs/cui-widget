@@ -14,7 +14,7 @@ Two rules govern this table:
 
 ## The matrix
 
-**Supported — 21**
+**Supported — 22**
 
 | feature | enum | notes |
 | --- | --- | --- |
@@ -33,6 +33,7 @@ Two rules govern this table:
 | opacity-compositing | `CUIW_FEATURE_OPACITY_COMPOSITING` | group `opacity` 0.0-1.0; scales the alpha of every color the node paints (bg/border/text) and accumulates down the tree, so a faded container fades descendants |
 | pseudo-classes | `CUIW_FEATURE_PSEUDO_CLASSES` | `:disabled`, plus structural `:first-child` / `:last-child` / `:nth-child(an+b)` (incl. `odd`/`even`); position counted among element siblings. `:hover`/`:focus` etc. are unsupported and never match |
 | media-queries | `CUIW_FEATURE_MEDIA_QUERIES` | `@media` width constraints (`min-width` / `max-width`, combined with `and`) evaluated against the document's current CSS width; an unevaluable query (orientation, …) is dropped entirely |
+| floats | `CUIW_FEATURE_FLOATS` | `float: left` / `right`; the box is taken out of flow, placed at the line's content edge, and following inline content + block siblings wrap around it; the container grows to contain floats. No `clear`, no nested-float stacking beyond side accumulation |
 | percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | % width & height resolve against the containing block; % height needs a definite parent height (CSS 10.5) |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | runs of inline siblings (text, span/em/strong/a/…) flow on shared line boxes and wrap as a unit; per-segment color/weight |
 | tables | `CUIW_FEATURE_TABLES` | `table`/`tr`/`td`/`th`, auto column widths, `colspan`, row heights, cell stretch; no `rowspan` yet |
@@ -40,18 +41,17 @@ Two rules govern this table:
 | text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | out-of-flow box against the nearest positioned ancestor's padding box; `top`/`right`/`bottom`/`left` offsets, shrink-to-fit or explicit width. No `z-index` stacking contexts yet |
 
-**Not yet — 6**
+**Not yet — 5**
 
 | feature | enum | status |
 | --- | --- | --- |
 | grid | `CUIW_FEATURE_GRID` | no CSS grid |
-| floats | `CUIW_FEATURE_FLOATS` | no float |
 | transitions | `CUIW_FEATURE_TRANSITIONS` | static styles only |
 | keyframes | `CUIW_FEATURE_KEYFRAMES` | no animation |
 | canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
 | inline-svg | `CUIW_FEATURE_INLINE_SVG` | no SVG |
 
-**Totals:** 27 tracked, 21 supported, 6 not yet.
+**Totals:** 27 tracked, 22 supported, 5 not yet.
 
 ## How to check a document against this
 

@@ -159,13 +159,13 @@ typedef enum cuiw_feature {
     CUIW_FEATURE_OPACITY_COMPOSITING,
     CUIW_FEATURE_PSEUDO_CLASSES,   ///< :disabled + :first-child/:last-child/:nth-child
     CUIW_FEATURE_MEDIA_QUERIES,    ///< @media min-width / max-width against doc width
+    CUIW_FEATURE_FLOATS,           ///< float:left/right, inline + block wrap around
     /// Not yet: the list below is what the engine still lacks.
     CUIW_FEATURE_ABSOLUTE_POSITION,
     CUIW_FEATURE_PERCENT_HEIGHT,
     CUIW_FEATURE_INLINE_LAYOUT,
     CUIW_FEATURE_TABLES,
     CUIW_FEATURE_GRID,
-    CUIW_FEATURE_FLOATS,
     CUIW_FEATURE_TRANSITIONS,
     CUIW_FEATURE_KEYFRAMES,
     CUIW_FEATURE_OVERFLOW_SCROLL,

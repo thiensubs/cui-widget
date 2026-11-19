@@ -141,6 +141,9 @@ enum class Overflow { Visible, Hidden };
 // a resolved CSS-px shift (negative = raise) so painting is a plain y offset.
 enum class VAlign { Baseline, Shift };
 enum class Position { Static, Relative, Absolute };
+// CSS float. A floated box is taken out of normal flow and placed at the left or
+// right edge of the current line; subsequent inline content wraps around it.
+enum class Float { None, Left, Right };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
 enum class TextAlign { Left, Center, Right };
@@ -175,6 +178,7 @@ struct Style {
     // when valign == VAlign::Shift.
     double valign_shift = 0;
     Position position = Position::Static;
+    Float float_ = Float::None;   // 'float' is a keyword; trailing underscore
     // top/right/bottom/left offsets. -1 = unset (auto). Resolved against the
     // nearest positioned ancestor's padding box at layout time.
     double top = -1, right = -1, bottom = -1, left = -1;
@@ -279,6 +283,10 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         if (value.find("absolute") != std::string::npos) st.position = Position::Absolute;
         else if (value.find("relative") != std::string::npos) st.position = Position::Relative;
         else st.position = Position::Static;
+    } else if (is("float")) {
+        if (value.find("left") != std::string::npos) st.float_ = Float::Left;
+        else if (value.find("right") != std::string::npos) st.float_ = Float::Right;
+        else st.float_ = Float::None;
     } else if (is("top") || is("right") || is("bottom") || is("left")) {
         double x; if (parseLenPx(value, x)) {
             if (is("top")) st.top = x;
@@ -1259,20 +1267,56 @@ struct CuiRenderer::Impl {
             // shared line boxes and wrap as a unit.
             double cy = y + s.pad[0] + s.border;
             size_t ci = 0;
+            // Active floats in this block: boxes taken out of flow that inline
+            // content and following siblings must wrap around. Bounded subset —
+            // no `clear`, no nested-float stacking beyond side accumulation.
+            struct ActiveFloat { bool left; double x, w, top, bottom; };
+            std::vector<ActiveFloat> floats;
+            double float_bottom = cy;   // lowest float bottom, so the container can contain floats
+            // Width consumed by left/right floats overlapping vertical band [top,top+h).
+            auto floatSpan = [&](double top, double h, double& leftW, double& rightW) {
+                leftW = rightW = 0;
+                for (const auto& f : floats)
+                    if (f.top < top + h && f.bottom > top) {
+                        if (f.left) leftW += f.w; else rightW += f.w;
+                    }
+            };
             while (ci < n.children.size()) {
                 int64_t cid = n.children[ci];
                 Node& c = doc.nodes[cid];
                 if (c.kind == Node::Comment || c.style.display == Display::None) { ci++; continue; }
                 if (outOfFlow(c)) { abs_nodes_.push_back(cid); ci++; continue; }
+                // Floated box: out of normal flow. Shrink-to-fit width, placed at
+                // the current line's left/right content edge (beside any floats
+                // already on that side). Later content wraps around its box.
+                if (c.style.float_ != Float::None) {
+                    double fw = c.style.width >= 0 ? c.style.width
+                              : (c.kind == Node::Text ? textWidth(c.style, c.data)
+                                                      : intrinsicWidth(cid));
+                    fw = std::min(fw, avail_inner);
+                    double lh, rh;
+                    floatSpan(cy, 0, lh, rh);            // floats flush at this line top
+                    double fx = c.style.float_ == Float::Left
+                              ? cx + lh
+                              : cx + avail_inner - rh - fw;
+                    double fh = layoutNode(cid, fx, cy, fw, fw, definite_content_h);
+                    floats.push_back({c.style.float_ == Float::Left, fx, fw, cy, cy + fh});
+                    float_bottom = std::max(float_bottom, cy + fh);
+                    ci++;
+                    continue;
+                }
                 bool c_inline = c.kind == Node::Text || c.style.display == Display::Inline;
                 if (!c_inline) {
-                    double child_avail = avail_inner;
-                    double used_w = c.style.width >= 0 ? c.style.width : avail_inner;
+                    double lh, rh;
+                    floatSpan(cy, avail_inner, lh, rh);   // conservative: full band
+                    double child_avail = std::max(0.0, avail_inner - lh - rh);
+                    double used_w = c.style.width >= 0 ? c.style.width : child_avail;
                     // Record the block child's box top before laying it out —
                     // layoutNode sets x/w but not y, so without this every block
                     // sibling kept y=0 and stacked boxes overlapped.
                     c.y = cy + c.style.margin[0];
-                    double h = layoutNode(cid, cx, cy, child_avail, -1, definite_content_h);
+                    double bx = cx + lh;                 // indent past left floats
+                    double h = layoutNode(cid, bx, cy, child_avail, -1, definite_content_h);
                     if (c.w < used_w && s.align == Align::Center) shiftX(cid, (used_w - c.w) / 2);
                     cy += h + c.style.margin[0] + c.style.margin[2];
                     inner_h += h + c.style.margin[0] + c.style.margin[2];
@@ -1291,10 +1335,19 @@ struct CuiRenderer::Impl {
                     run.push_back(rid);
                     ci++;
                 }
-                double rh = layoutInlineRun(run, cx, cy, avail_inner);
-                cy += rh;
-                inner_h += rh;
+                // Narrow the inline run around any floats overlapping this line so
+                // text wraps beside a floated box instead of under it.
+                double lh, rh;
+                floatSpan(cy, 1.0, lh, rh);              // 1 line; refined per-line below
+                double run_x = cx + lh;
+                double run_avail = std::max(0.0, avail_inner - lh - rh);
+                double rh_run = layoutInlineRun(run, run_x, cy, run_avail);
+                cy += rh_run;
+                inner_h += rh_run;
             }
+            // A float that hangs below the in-flow content must still be contained
+            // (CSS 9.5.1): grow the content height to the lowest float bottom.
+            inner_h = std::max(inner_h, float_bottom - (y + s.pad[0] + s.border));
         }
 
         // The element's own height. A percentage height resolves against the
