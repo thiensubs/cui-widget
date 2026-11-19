@@ -179,6 +179,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_MIN_HEIGHT:
         case CUIW_FEATURE_VERTICAL_ALIGN:
         case CUIW_FEATURE_CSS_VARIABLES:
+        case CUIW_FEATURE_OPACITY_COMPOSITING:
         case CUIW_FEATURE_PERCENT_HEIGHT:
         case CUIW_FEATURE_INLINE_LAYOUT:
         case CUIW_FEATURE_TABLES:

@@ -178,6 +178,10 @@ struct Style {
     // top/right/bottom/left offsets. -1 = unset (auto). Resolved against the
     // nearest positioned ancestor's padding box at layout time.
     double top = -1, right = -1, bottom = -1, left = -1;
+    // Group opacity (CSS 1-100 / 0.0-1.0). Applied by scaling the alpha of every
+    // color this node paints (bg, border, text) and accumulating down the tree, so
+    // a faded container fades its descendants. 1.0 = fully opaque (no change).
+    float opacity = 1.f;
     // Resolved CSS custom properties (--name -> value) visible on this node:
     // declared here or inherited from the nearest ancestor that declares them.
     // Populated during computeStyle, before var() references are substituted.
@@ -241,8 +245,12 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     else if (is("font-weight")) {
         if (value.find("bold") != std::string::npos) { st.bold = true; st.font_weight = 700; }
         else { int w = std::atoi(value.c_str()); if (w) { st.font_weight = w; st.bold = w >= 600; } }
-    } else if (is("opacity")) { /* compositing not yet supported */ }
-    else if (is("text-decoration")) {
+    } else if (is("opacity")) {
+        // Group opacity 0.0-1.0 (values >1 clamp to 1). Scales the alpha of every
+        // color this node paints and accumulates down the tree at computeStyle.
+        float o = (float)std::atof(value.c_str());
+        st.opacity = std::clamp(o, 0.f, 1.f);
+    } else if (is("text-decoration")) {
         if (value.find("underline") != std::string::npos) st.text_decoration = TextDecoration::Underline;
         else if (value.find("line-through") != std::string::npos) st.text_decoration = TextDecoration::LineThrough;
         else st.text_decoration = TextDecoration::None;
@@ -553,6 +561,9 @@ void computeStyle(Doc& d, int64_t id) {
         // author/inline declarations overrides this below.
         n.style.valign = p->style.valign;
         n.style.valign_shift = p->style.valign_shift;
+        // Group opacity accumulates down the tree (CSS 1-100): a faded container
+        // fades its descendants multiplicatively.
+        n.style.opacity = p->style.opacity;
     }
     // Custom properties inherit parent->child (CSS 15.3). The parent's set is
     // already final here (computeStyleAll walks parent-before-child).
@@ -1270,11 +1281,20 @@ struct CuiRenderer::Impl {
         double ly = (s.text_decoration == TextDecoration::Underline)
                         ? y_top + s.font_size * 0.92
                         : y_top + s.font_size * 0.55;
-        cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
-                       (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
-                       (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
+        cui_color col = paintColor(s.color, s.opacity);
         cui_draw_line(ui, cui_vec2{ (float)x, (float)ly }, cui_vec2{ (float)(x + width), (float)ly },
                       thickness, col);
+    }
+
+    // Convert a style color to a cui_color, folding in the node's group opacity
+    // (accumulated down the tree). The alpha channel carries the product, so the
+    // rasterizer composites the whole primitive at the faded strength.
+    static cui_color paintColor(const Rgba& c, float opacity) {
+        float a = std::clamp(c.a * opacity, 0.f, 1.f);
+        return cui_color{ (uint8_t)std::clamp(c.r * 255.f, 0.f, 255.f),
+                          (uint8_t)std::clamp(c.g * 255.f, 0.f, 255.f),
+                          (uint8_t)std::clamp(c.b * 255.f, 0.f, 255.f),
+                          (uint8_t)std::clamp(a * 255.f, 0.f, 255.f) };
     }
 
     void paintNode(int64_t id) {
@@ -1299,16 +1319,10 @@ struct CuiRenderer::Impl {
                         [&]{ std::string c; for (auto&a:n.attrs) if(a.first=="class") c=a.second; return c; }().c_str(),
                         r.x, r.y, r.w, r.h);
 #endif
-            cui_color bg{ (uint8_t)std::clamp(s.bg.r * 255.f, 0.f, 255.f),
-                          (uint8_t)std::clamp(s.bg.g * 255.f, 0.f, 255.f),
-                          (uint8_t)std::clamp(s.bg.b * 255.f, 0.f, 255.f),
-                          (uint8_t)std::clamp(s.bg.a * 255.f, 0.f, 255.f) };
+            cui_color bg = paintColor(s.bg, s.opacity);
             if (s.border > 0)
                 cui_draw_rect_border(ui, r, rad, bg,
-                                     cui_color{ (uint8_t)std::clamp(s.border_color.r * 255.f, 0.f, 255.f),
-                                                (uint8_t)std::clamp(s.border_color.g * 255.f, 0.f, 255.f),
-                                                (uint8_t)std::clamp(s.border_color.b * 255.f, 0.f, 255.f),
-                                                (uint8_t)std::clamp(s.border_color.a * 255.f, 0.f, 255.f) },
+                                     paintColor(s.border_color, s.opacity),
                                      (float)s.border);
             else {
 #ifdef CUIW_LAYOUT_DEBUG
@@ -1333,9 +1347,7 @@ struct CuiRenderer::Impl {
         }
         if (n.kind == Node::Text && !n.segs.empty()) {
             // Inline flow: draw positioned segments, each at its own (x, y).
-            cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
-                           (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
-                           (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
+            cui_color col = paintColor(s.color, s.opacity);
             for (const auto& sg : n.segs)
                 if (!sg.text.empty()) {
                     cui_draw_text(ui, fontFor(s), (float)s.font_size,
@@ -1344,9 +1356,7 @@ struct CuiRenderer::Impl {
                 }
         }
         else if (n.kind == Node::Text && !n.lines.empty()) {
-            cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
-                           (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
-                           (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
+            cui_color col = paintColor(s.color, s.opacity);
             double ty = n.y;
             for (const auto& ln : n.lines) {
                 if (!ln.text.empty()) {
