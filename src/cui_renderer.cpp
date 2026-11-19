@@ -132,7 +132,7 @@ std::vector<double> boxValues(const std::string& v) {
     return out;                                                          // t r b l
 }
 
-enum class Display { Block, Flex, Inline, None };
+enum class Display { Block, Flex, Inline, Table, TableRowGroup, TableRow, TableCell, None };
 enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class Justify { Start, Center, End, Between };
@@ -386,7 +386,7 @@ void applyUaDefaults(Doc& d, Node& n) {
     else if (t == "h4") { s.bold = true; s.font_size = 1.07 * kDefaultFontSize; }
     else if (t == "h5") { s.bold = true; s.font_size = kDefaultFontSize; }
     else if (t == "h6") { s.bold = true; s.font_size = 0.87 * kDefaultFontSize; }
-    else if (t == "p" || t == "ul" || t == "ol" || t == "pre" || t == "blockquote" || t == "figure" || t == "table") { s.margin[0] = s.margin[2] = 0.6 * kDefaultFontSize; }
+    else if (t == "p" || t == "ul" || t == "ol" || t == "pre" || t == "blockquote" || t == "figure") { s.margin[0] = s.margin[2] = 0.6 * kDefaultFontSize; }
     else if (t == "button") {
         s.pad[0] = s.pad[2] = 8; s.pad[1] = s.pad[3] = 14;
         s.radius = 8;
@@ -394,6 +394,16 @@ void applyUaDefaults(Doc& d, Node& n) {
         s.bold = true; s.font_weight = 500;
     }
     else if (t == "br") { s.display = Display::Block; s.height = 0; }
+    // CSS table model roles (CSS 17). The table layout pass walks these; painting
+    // is the normal block/inline recursion once each cell has a position.
+    else if (t == "table") { s.display = Display::Table; s.margin[0] = s.margin[2] = 0.6 * kDefaultFontSize; }
+    else if (t == "tr") { s.display = Display::TableRow; }
+    else if (t == "td" || t == "th") {
+        s.display = Display::TableCell;
+        s.pad[0] = s.pad[2] = 6; s.pad[1] = s.pad[3] = 10;
+        if (t == "th") { s.bold = true; s.font_weight = 600; }
+    }
+    else if (t == "thead" || t == "tbody" || t == "tfoot") { s.display = Display::TableRowGroup; }
     // Phrasing content flows inline by default (CSS 9.2.2). Text nodes are inline
     // by nature; these elements join their inline siblings on a shared line box.
     else if (t == "span" || t == "a" || t == "em" || t == "i" || t == "strong" ||
@@ -641,6 +651,124 @@ struct CuiRenderer::Impl {
         return total;
     }
 
+    // Collect the rows of a table: direct <tr> children, plus the rows of any
+    // row-group children (<thead>/<tbody>/<tfoot>). Returns row node ids in order.
+    void collectRows(int64_t table, std::vector<int64_t>& rows) {
+        for (int64_t cid : doc.nodes[table].children) {
+            Node& c = doc.nodes[cid];
+            if (c.kind == Node::Comment || c.style.display == Display::None) continue;
+            if (c.style.display == Display::TableRowGroup) collectRows(cid, rows);
+            else if (c.style.display == Display::TableRow) rows.push_back(cid);
+        }
+    }
+
+    // Auto table layout (CSS 17.5, simplified): size columns to the max intrinsic
+    // (min-content) width of the single-column cells in each, honor colspan by
+    // distributing a spanning cell's excess over the columns it spans, then scale
+    // the whole grid to fit the available width. Lays each cell out at its final
+    // position and stretches every cell to its row's height.
+    double layoutTable(int64_t table, double cx, double cy, double avail_inner) {
+        std::vector<int64_t> rows;
+        collectRows(table, rows);
+
+        // Flatten each row to its cells, reading colspan.
+        struct Cell { int64_t id; int col; int span; };
+        std::vector<std::vector<Cell>> grid;
+        int ncols = 0;
+        for (int64_t rid : rows) {
+            std::vector<Cell> row;
+            int col = 0;
+            for (int64_t cid : doc.nodes[rid].children) {
+                Node& c = doc.nodes[cid];
+                if (c.kind == Node::Comment || c.style.display != Display::TableCell) continue;
+                int span = 1;
+                for (const auto& a : c.attrs)
+                    if (a.first == "colspan") { int v = std::atoi(a.second.c_str()); if (v > 0) span = v; }
+                row.push_back({cid, col, span});
+                col += span;
+            }
+            ncols = std::max(ncols, col);
+            grid.push_back(row);
+        }
+        if (ncols == 0 || grid.empty()) {
+#ifdef CUIW_LAYOUT_DEBUG
+            fprintf(stderr, "[table] EARLY-OUT table=%lld ncols=%d grid=%zu\n",
+                    (long long)table, ncols, grid.size());
+#endif
+            doc.nodes[table].w = 0; return 0;
+        }
+
+        // Column widths from single-column cells (min-content via intrinsicWidth).
+        std::vector<double> colw(ncols, 0);
+        for (const auto& row : grid)
+            for (const Cell& cell : row)
+                if (cell.span == 1)
+                    colw[cell.col] = std::max(colw[cell.col], intrinsicWidth(cell.id));
+
+        // Distribute a spanning cell's excess over the columns it covers.
+        for (const auto& row : grid)
+            for (const Cell& cell : row) {
+                if (cell.span <= 1) continue;
+                int last = std::min(cell.col + cell.span, ncols);
+                double sum = 0;
+                for (int k = cell.col; k < last; k++) sum += colw[k];
+                double need = intrinsicWidth(cell.id);
+                if (need > sum) {
+                    double add = (need - sum) / (last - cell.col);
+                    for (int k = cell.col; k < last; k++) colw[k] += add;
+                }
+            }
+
+        // Fit the grid to the available content width: shrink proportionally if it
+        // overflows, grow proportionally if the table has an explicit width.
+        double total = 0;
+        for (double w : colw) total += w;
+        double target = total;
+        Node& tn = doc.nodes[table];
+        if (tn.style.width_pct >= 0) target = tn.style.width_pct / 100.0 * avail_inner;
+        else if (tn.style.width >= 0) target = tn.style.width;
+        target = std::min(target, avail_inner);
+        if (total > 0 && target > 0 && std::abs(target - total) > 0.5) {
+            double f = target / total;
+            for (double& w : colw) w *= f;
+            total = target;
+        }
+        if (total < target) total = target;
+#ifdef CUIW_LAYOUT_DEBUG
+        fprintf(stderr, "[table] table=%lld rows=%zu ncols=%d target=%.1f total=%.1f colw=[",
+                (long long)table, grid.size(), ncols, target, total);
+        for (double w : colw) fprintf(stderr, "%.1f ", w);
+        fprintf(stderr, "]\n");
+#endif
+
+        // Place rows and cells; each cell stretches to its row's height.
+        double ty = cy;
+        for (size_t r = 0; r < grid.size(); r++) {
+            double row_h = 0;
+            for (const Cell& cell : grid[r]) {
+                double cellx = cx;
+                for (int k = 0; k < cell.col; k++) cellx += colw[k];
+                double cellw = 0;
+                int last = std::min(cell.col + cell.span, ncols);
+                for (int k = cell.col; k < last; k++) cellw += colw[k];
+#ifdef CUIW_LAYOUT_DEBUG
+                fprintf(stderr, "[cell] r=%zu col=%d span=%d cellx=%.1f cellw=%.1f ty=%.1f\n",
+                        r, cell.col, cell.span, cellx, cellw, ty);
+#endif
+                double ch = layoutNode(cell.id, cellx, ty, cellw, cellw, -1);
+                row_h = std::max(row_h, ch);
+            }
+            // Stretch this row's cells to the row height (border/background fill).
+            for (const Cell& cell : grid[r]) {
+                Node& c = doc.nodes[cell.id];
+                if (c.h < row_h) c.h = row_h;
+            }
+            ty += row_h;
+        }
+        tn.w = total;
+        return ty - cy;
+    }
+
     double layoutNode(int64_t id, double x, double y, double avail_w,
                       double main_w = -1, double parent_definite_h = -1) {
         Node& n = doc.nodes[id];
@@ -705,7 +833,10 @@ struct CuiRenderer::Impl {
 
         // Lay out children.
         double inner_h = 0;
-        if (s.display == Display::Flex) {
+        if (s.display == Display::Table) {
+            inner_h = layoutTable(id, cx, y + s.pad[0] + s.border, avail_inner);
+        }
+        else if (s.display == Display::Flex) {
             std::vector<int64_t> kids;
             for (int64_t cid : n.children) {
                 Node& c = doc.nodes[cid];

@@ -30,13 +30,13 @@ Two rules govern this table:
 | min-height | `CUIW_FEATURE_MIN_HEIGHT` | per-node minimum block size |
 | percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | % width & height resolve against the containing block; % height needs a definite parent height (CSS 10.5) |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | runs of inline siblings (text, span/em/strong/a/…) flow on shared line boxes and wrap as a unit; per-segment color/weight |
+| tables | `CUIW_FEATURE_TABLES` | `table`/`tr`/`td`/`th`, auto column widths, `colspan`, row heights, cell stretch; no `rowspan` yet |
 
 **Not yet — 14**
 
 | feature | enum | status |
 | --- | --- | --- |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | not implemented |
-| tables | `CUIW_FEATURE_TABLES` | no table model |
 | grid | `CUIW_FEATURE_GRID` | no CSS grid |
 | floats | `CUIW_FEATURE_FLOATS` | no float |
 | css-variables | `CUIW_FEATURE_CSS_VARIABLES` | `var()` not resolved |
@@ -75,7 +75,7 @@ Or from the shell, rebuild the probe the README links:
 
 ## Design guidance within the subset
 
-- Lay out with **block and flex**; avoid grid, tables, floats, absolute.
+- Lay out with **block and flex**; avoid grid, floats, absolute. Tables work for simple data grids.
 - Size with **fixed / min-height**; do not rely on percent-height.
 - Style with the supported properties; treat the rest as no-ops.
 - Use the `CUIW_FEATURE_*` enum as your compile-time checklist when authoring
