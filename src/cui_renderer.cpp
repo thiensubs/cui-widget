@@ -132,7 +132,7 @@ std::vector<double> boxValues(const std::string& v) {
     return out;                                                          // t r b l
 }
 
-enum class Display { Block, Flex, Inline, Table, TableRowGroup, TableRow, TableCell, None };
+enum class Display { Block, Flex, Inline, Table, TableRowGroup, TableRow, TableCell, Grid, None };
 enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class TextDecoration { None, Underline, LineThrough };
@@ -190,11 +190,47 @@ struct Style {
     // declared here or inherited from the nearest ancestor that declares them.
     // Populated during computeStyle, before var() references are substituted.
     std::map<std::string, std::string> custom_props;
+    // Grid (display: grid). Tracks hold the template as parsed; lengths in px,
+    // percentages kept as pct (>=0), and flex 'fr' units kept as fr (>=0). An
+    // empty columns list makes every child land in a single implicit column.
+    struct Track { double px = -1, pct = -1, fr = -1; };
+    std::vector<Track> grid_cols, grid_rows;
+    double row_gap = -1, column_gap = -1;   // -1 = unset (fall back to gap)
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
 struct Decls { std::vector<std::pair<std::string, std::string>> kv; };
 Decls parseDecls(const std::string& body);
+
+// Parse a grid track list such as "100px 1fr auto 25%" into Track entries.
+// Recognizes px lengths, percentages (kept as pct), fr flex units (kept as fr),
+// and auto (treated as an fr:0 track sized by content -> px -1, pct -1, fr 0).
+// Unrecognized tokens are skipped. repeat() / minmax() are not modeled.
+std::vector<Style::Track> parseTracks(const std::string& value) {
+    std::vector<Style::Track> out;
+    std::string tok;
+    auto commit = [&]() {
+        if (tok.empty()) return;
+        Style::Track t;
+        double num = 0; char unit = 0;
+        if (std::sscanf(tok.c_str(), "%lf%c", &num, &unit) >= 1) {
+            if (unit == '%') t.pct = num;
+            else if (unit == 'f') t.fr = num;              // "1fr"
+            else if (unit == 0) t.px = num;                // bare number -> px
+            else if (unit == 'p') t.px = num;              // "100px" (unit captured 'p')
+            else t.px = num;
+        }
+        // auto / none -> all fields stay -1/fr0, sized by content.
+        out.push_back(t);
+        tok.clear();
+    };
+    for (char c : value) {
+        if (std::isspace((unsigned char)c)) commit();
+        else tok.push_back(c);
+    }
+    commit();
+    return out;
+}
 
 void applyDecl(Style& st, const std::string& name, const std::string& value) {
     auto is = [&](const char* k) { return name == k; };
@@ -202,6 +238,7 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         if (value == "flex") st.display = Display::Flex;
         else if (value == "none") st.display = Display::None;
         else if (value.find("inline") != std::string::npos) st.display = Display::Inline;
+        else if (value == "grid") st.display = Display::Grid;
         else st.display = Display::Block;
     } else if (is("flex-direction")) {
         st.flex_dir = value.find("column") != std::string::npos ? FlexDir::Column : FlexDir::Row;
@@ -223,8 +260,19 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         else if (value.find("right") != std::string::npos || value.find("end") != std::string::npos)
             st.text_align = TextAlign::Right;
         else st.text_align = TextAlign::Left;
-    } else if (is("gap")) { double x; if (parseLenPx(value, x)) st.gap = x; }
-    else if (is("padding")) { auto b = boxValues(value); for (int i = 0; i < 4 && i < (int)b.size(); i++) st.pad[i] = b[i]; }
+    } else if (is("gap")) {
+        double x; if (parseLenPx(value, x)) st.gap = x;
+        // A single value sets both axes; grid reads row_gap/column_gap which
+        // default to -1 (unset) and fall back to gap at layout.
+    } else if (is("row-gap")) {
+        double x; if (parseLenPx(value, x)) st.row_gap = x;
+    } else if (is("column-gap")) {
+        double x; if (parseLenPx(value, x)) st.column_gap = x;
+    } else if (is("grid-template-columns")) {
+        st.grid_cols = parseTracks(value);
+    } else if (is("grid-template-rows")) {
+        st.grid_rows = parseTracks(value);
+    } else if (is("padding")) { auto b = boxValues(value); for (int i = 0; i < 4 && i < (int)b.size(); i++) st.pad[i] = b[i]; }
     else if (is("margin")) { auto b = boxValues(value); for (int i = 0; i < 4 && i < (int)b.size(); i++) st.margin[i] = b[i]; }
     else if (is("width")) { double x; bool p; if (parseLenPx(value, x, p)) { st.width = x; st.width_pct = p ? x : -1; } }
     else if (is("height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.height = x; st.height_pct = p ? x : -1; } }
@@ -1058,6 +1106,93 @@ struct CuiRenderer::Impl {
         return ty - cy;
     }
 
+    // Grid layout (display: grid). Bounded subset of CSS Grid:
+    //   - Explicit column tracks from grid-template-columns (px / % / fr / auto).
+    //     With no template, a single implicit column stacks the items.
+    //   - Auto-placement: items fill the columns left-to-right, wrapping to a new
+    //     row. No explicit grid-column/grid-row placement, no spanning, no dense
+    //     packing.
+    //   - Row tracks from grid-template-rows set a row's height when given (px / %);
+    //     otherwise a row is as tall as its tallest item. fr rows are treated as
+    //     auto (a definite container height would be needed to resolve them).
+    //   - column-gap / row-gap (falling back to gap) separate the tracks.
+    double layoutGrid(int64_t grid, double cx, double cy, double avail_inner) {
+        Node& gn = doc.nodes[grid];
+        Style& s = gn.style;
+        double col_gap = s.column_gap >= 0 ? s.column_gap : s.gap;
+        double row_gap = s.row_gap >= 0 ? s.row_gap : s.gap;
+
+        // In-flow items (comments / display:none / abs are skipped by callers).
+        std::vector<int64_t> items;
+        for (int64_t cid : gn.children) {
+            Node& c = doc.nodes[cid];
+            if (c.kind == Node::Comment || c.style.display == Display::None) continue;
+            if (outOfFlow(c)) { abs_nodes_.push_back(cid); continue; }
+            items.push_back(cid);
+        }
+        if (items.empty()) return 0;
+
+        // Resolve column track widths. fr tracks split the space left after the
+        // definite (px / %) tracks and the gaps.
+        int ncols = s.grid_cols.empty() ? 1 : (int)s.grid_cols.size();
+        std::vector<double> colw(ncols, 0);
+        double fixed = 0, fr_total = 0;
+        for (int c = 0; c < ncols; c++) {
+            const Style::Track& t = s.grid_cols.empty() ? Style::Track{} : s.grid_cols[c];
+            if (t.px >= 0) colw[c] = t.px;
+            else if (t.pct >= 0) colw[c] = t.pct / 100.0 * avail_inner;
+            else if (t.fr >= 0) fr_total += t.fr;
+            fixed += colw[c];
+        }
+        double leftover = avail_inner - fixed - col_gap * (ncols - 1);
+        if (fr_total > 0 && leftover > 0)
+            for (int c = 0; c < ncols; c++) {
+                double fr = s.grid_cols.empty() ? 0 : s.grid_cols[c].fr;
+                if (fr > 0) colw[c] = leftover * (fr / fr_total);
+            }
+        // With no template, the single implicit column fills the container.
+        if (s.grid_cols.empty()) colw[0] = avail_inner;
+
+        // Place items row by row. A row's height is its tallest item, or the
+        // explicit grid-template-rows value when given.
+        int ncols_eff = std::max(1, ncols);
+        int nrows = (int)((items.size() + ncols_eff - 1) / ncols_eff);
+        double row_y = cy;
+        double total_h = 0;
+        for (int r = 0; r < nrows; r++) {
+            double row_h = 0;
+            double explicit_h = -1;
+            if (r < (int)s.grid_rows.size()) {
+                const Style::Track& rt = s.grid_rows[r];
+                if (rt.px >= 0) explicit_h = rt.px;
+                else if (rt.pct >= 0) explicit_h = rt.pct / 100.0 * avail_inner;
+            }
+            for (int c = 0; c < ncols_eff; c++) {
+                int idx = r * ncols_eff + c;
+                if (idx >= (int)items.size()) break;
+                double cellw = (c < (int)colw.size()) ? colw[c] : 0;
+                double cellx = cx;
+                for (int k = 0; k < c && k < (int)colw.size(); k++) cellx += colw[k] + col_gap;
+                Node& it = doc.nodes[items[idx]];
+                it.x = cellx; it.y = row_y;
+                double ih = layoutNode(items[idx], cellx, row_y, cellw, cellw, -1);
+                row_h = std::max(row_h, ih);
+            }
+            if (explicit_h > row_h) row_h = explicit_h;
+            // Stretch this row's items to the row height (background/border fill).
+            for (int c = 0; c < ncols_eff; c++) {
+                int idx = r * ncols_eff + c;
+                if (idx >= (int)items.size()) break;
+                Node& it = doc.nodes[items[idx]];
+                if (it.h < row_h) it.h = row_h;
+            }
+            row_y += row_h + row_gap;
+            total_h += row_h + (r + 1 < nrows ? row_gap : 0);
+        }
+        gn.w = avail_inner;
+        return total_h;
+    }
+
     double layoutNode(int64_t id, double x, double y, double avail_w,
                       double main_w = -1, double parent_definite_h = -1) {
         Node& n = doc.nodes[id];
@@ -1086,6 +1221,7 @@ struct CuiRenderer::Impl {
         if (main_w >= 0) w = std::min(main_w, content_avail);   // flex item: measured main-axis size
         else if (explicit_w >= 0) w = std::min(explicit_w, content_avail);
         else if (s.display == Display::Flex && s.flex_dir == FlexDir::Row) w = content_avail;
+        else if (s.display == Display::Grid) w = content_avail;   // a grid fills the container
         else if (n.kind == Node::Text) w = content_avail;
         else if (s.display == Display::Block) w = content_avail;   // a block box fills the container
         else {
@@ -1125,6 +1261,9 @@ struct CuiRenderer::Impl {
         double inner_h = 0;
         if (s.display == Display::Table) {
             inner_h = layoutTable(id, cx, y + s.pad[0] + s.border, avail_inner);
+        }
+        else if (s.display == Display::Grid) {
+            inner_h = layoutGrid(id, cx, y + s.pad[0] + s.border, avail_inner);
         }
         else if (s.display == Display::Flex) {
             std::vector<int64_t> kids;

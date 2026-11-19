@@ -183,6 +183,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_PSEUDO_CLASSES:
         case CUIW_FEATURE_MEDIA_QUERIES:
         case CUIW_FEATURE_FLOATS:
+        case CUIW_FEATURE_GRID:
         case CUIW_FEATURE_PERCENT_HEIGHT:
         case CUIW_FEATURE_INLINE_LAYOUT:
         case CUIW_FEATURE_TABLES:

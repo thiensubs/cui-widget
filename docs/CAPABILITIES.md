@@ -40,18 +40,18 @@ Two rules govern this table:
 | overflow-scroll | `CUIW_FEATURE_OVERFLOW_SCROLL` | `overflow: hidden` clips descendant content (text + children) to the padding box; `visible` does not. Content is clipped, not scrolled |
 | text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | out-of-flow box against the nearest positioned ancestor's padding box; `top`/`right`/`bottom`/`left` offsets, shrink-to-fit or explicit width. No `z-index` stacking contexts yet |
+| grid | `CUIW_FEATURE_GRID` | `display: grid`; `grid-template-columns`/`grid-template-rows` (px/`%`/`fr`/auto), `gap`/`row-gap`/`column-gap`; auto-placement row-major, items stretch to row height. No explicit `grid-column`/`grid-row` placement, no spanning, no dense packing; `fr` rows treated as auto |
 
-**Not yet — 5**
+**Not yet — 4**
 
 | feature | enum | status |
 | --- | --- | --- |
-| grid | `CUIW_FEATURE_GRID` | no CSS grid |
 | transitions | `CUIW_FEATURE_TRANSITIONS` | static styles only |
 | keyframes | `CUIW_FEATURE_KEYFRAMES` | no animation |
 | canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
 | inline-svg | `CUIW_FEATURE_INLINE_SVG` | no SVG |
 
-**Totals:** 27 tracked, 22 supported, 5 not yet.
+**Totals:** 27 tracked, 23 supported, 4 not yet.
 
 ## How to check a document against this
 
@@ -76,7 +76,7 @@ Or from the shell, rebuild the probe the README links:
 
 ## Design guidance within the subset
 
-- Lay out with **block and flex**; avoid grid and floats. Use `position: absolute` for badges and overlays.
+- Lay out with **block, flex, or grid** (bounded auto-placement); avoid floats. Use `position: absolute` for badges and overlays.
 - Size with **fixed / min-height**; do not rely on percent-height.
 - Style with the supported properties; treat the rest as no-ops.
 - Use the `CUIW_FEATURE_*` enum as your compile-time checklist when authoring
