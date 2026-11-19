@@ -177,6 +177,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_TEXT_ALIGN:
         case CUIW_FEATURE_FONT_WEIGHT:
         case CUIW_FEATURE_MIN_HEIGHT:
+        case CUIW_FEATURE_PERCENT_HEIGHT:
             return true;
         default:
             return false;

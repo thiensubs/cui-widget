@@ -14,7 +14,7 @@ Two rules govern this table:
 
 ## The matrix
 
-**Supported — 10**
+**Supported — 11**
 
 | feature | enum | notes |
 | --- | --- | --- |
@@ -28,13 +28,13 @@ Two rules govern this table:
 | text-align | `CUIW_FEATURE_TEXT_ALIGN` | left / center / right |
 | font-weight | `CUIW_FEATURE_FONT_WEIGHT` | normal / bold |
 | min-height | `CUIW_FEATURE_MIN_HEIGHT` | per-node minimum block size |
+| percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | % width & height resolve against the containing block; % height needs a definite parent height (CSS 10.5) |
 
-**Not yet — 16**
+**Not yet — 15**
 
 | feature | enum | status |
 | --- | --- | --- |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | not implemented |
-| percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | percent *width* works; height does not |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | inline flow / inline-block |
 | tables | `CUIW_FEATURE_TABLES` | no table model |
 | grid | `CUIW_FEATURE_GRID` | no CSS grid |

@@ -86,14 +86,19 @@ bool parseColor(const std::string& in, Rgba& out) {
     return false;
 }
 
-bool parseLenPx(const std::string& v, double& out) {
+bool parseLenPx(const std::string& v, double& out, bool& is_pct) {
     std::string s;
     for (char c : v) if (!std::isspace((unsigned char)c)) s.push_back(c);
     if (s.empty()) return false;
+    is_pct = false;
+    double mult = 1.0;
+    if (s.size() >= 1 && s.back() == '%') {
+        is_pct = true;
+        s.pop_back();
+    }
     // A length: a number optionally followed by px. em/rem resolve against the
     // element's own font-size by the caller; here we treat em as px * 16.
-    double mult = 1.0;
-    if (s.size() >= 2 && s.substr(s.size() - 2) == "px") s = s.substr(0, s.size() - 2);
+    else if (s.size() >= 2 && s.substr(s.size() - 2) == "px") s = s.substr(0, s.size() - 2);
     else if (s.size() >= 2 && s.substr(s.size() - 2) == "em") { s = s.substr(0, s.size() - 2); mult = kDefaultFontSize; }
     else if (s.size() >= 3 && s.substr(s.size() - 3) == "rem") { s = s.substr(0, s.size() - 3); mult = kDefaultFontSize; }
     char* end = nullptr;
@@ -101,6 +106,11 @@ bool parseLenPx(const std::string& v, double& out) {
     if (end == s.c_str()) return false;
     out = x * mult;
     return true;
+}
+// Convenience wrapper for callers that do not care about percent.
+bool parseLenPx(const std::string& v, double& out) {
+    bool pct = false;
+    return parseLenPx(v, out, pct);
 }
 
 // Splits "a b c d" into 1-4 box values (CSS shorthand order).
@@ -140,6 +150,9 @@ struct Style {
     double pad[4] = {0, 0, 0, 0};      // t r b l
     double margin[4] = {0, 0, 0, 0};   // t r b l
     double width = -1, height = -1, min_height = -1;
+    // When the matching length was a percentage, the percent is kept here and
+    // resolved against the containing block at layout time. -1 = not a percent.
+    double width_pct = -1, height_pct = -1, min_height_pct = -1;
     Rgba bg{0, 0, 0, 0};
     Rgba color{0, 0, 0, 1};
     double radius = 0;
@@ -184,9 +197,9 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     } else if (is("gap")) { double x; if (parseLenPx(value, x)) st.gap = x; }
     else if (is("padding")) { auto b = boxValues(value); for (int i = 0; i < 4 && i < (int)b.size(); i++) st.pad[i] = b[i]; }
     else if (is("margin")) { auto b = boxValues(value); for (int i = 0; i < 4 && i < (int)b.size(); i++) st.margin[i] = b[i]; }
-    else if (is("width")) { double x; if (parseLenPx(value, x)) st.width = x; }
-    else if (is("height")) { double x; if (parseLenPx(value, x)) st.height = x; }
-    else if (is("min-height")) { double x; if (parseLenPx(value, x)) st.min_height = x; }
+    else if (is("width")) { double x; bool p; if (parseLenPx(value, x, p)) { st.width = x; st.width_pct = p ? x : -1; } }
+    else if (is("height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.height = x; st.height_pct = p ? x : -1; } }
+    else if (is("min-height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.min_height = x; st.min_height_pct = p ? x : -1; } }
     else if (is("background") || is("background-color")) { Rgba c; if (parseColor(value, c)) st.bg = c; }
     else if (is("color")) { Rgba c; if (parseColor(value, c)) st.color = c; }
     else if (is("border-radius")) { double x; if (parseLenPx(value, x)) st.radius = x; }
@@ -521,7 +534,7 @@ struct CuiRenderer::Impl {
     }
 
     double layoutNode(int64_t id, double x, double y, double avail_w,
-                      double main_w = -1) {
+                      double main_w = -1, double parent_definite_h = -1) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) { n.w = n.h = 0; return 0; }
         Style& s = n.style;
@@ -529,10 +542,24 @@ struct CuiRenderer::Impl {
         double outer_x = x + ml;
         double content_avail = avail_w - ml - mr;
 
+        // This node's definite content height, if its height is definite. Children
+        // resolve a percentage height against this (CSS 10.5). -1 = height is auto,
+        // so a child's percentage height computes to auto.
+        double definite_content_h = -1;
+        {
+            double eh = s.height;
+            if (s.height_pct >= 0)
+                eh = parent_definite_h >= 0 ? s.height_pct / 100.0 * parent_definite_h : -1;
+            if (eh >= 0) definite_content_h = eh - s.pad[0] - s.pad[2] - s.border * 2;
+        }
+
         // Resolve the element's own width.
         double w;
+        // A percentage width resolves against the containing block's content width.
+        double explicit_w = s.width;
+        if (s.width_pct >= 0) explicit_w = s.width_pct / 100.0 * content_avail;
         if (main_w >= 0) w = std::min(main_w, content_avail);   // flex item: measured main-axis size
-        else if (s.width >= 0) w = std::min(s.width, content_avail);
+        else if (explicit_w >= 0) w = std::min(explicit_w, content_avail);
         else if (s.display == Display::Flex && s.flex_dir == FlexDir::Row) w = content_avail;
         else if (n.kind == Node::Text) w = content_avail;
         else if (s.display == Display::Block) w = content_avail;   // a block box fills the container
@@ -589,7 +616,7 @@ struct CuiRenderer::Impl {
                     k.main = c.style.width >= 0 ? c.style.width : intrinsicWidth(cid);
                     k.cross = 0; // resolved after we know the line cross size
                 } else {
-                    k.main = layoutNode(cid, 0, 0, avail_inner);  // column: full measure
+                    k.main = layoutNode(cid, 0, 0, avail_inner, -1, definite_content_h);  // column: full measure
                     k.cross = doc.nodes[cid].w;
                 }
                 ks.push_back(k);
@@ -633,7 +660,7 @@ struct CuiRenderer::Impl {
                     for (size_t j = 0; j < ln.size(); j++) {
                         Node& c = doc.nodes[ks[ln[j]].id];
                         double ch = layoutNode(ks[ln[j]].id, cx + cursor, cross_cursor,
-                                               child_avail_cross, ks[ln[j]].main);
+                                               child_avail_cross, ks[ln[j]].main, definite_content_h);
                         c.y = cross_cursor;
                         line_cross = std::max(line_cross, ch);
                         cursor += ks[ln[j]].main + gap + between;
@@ -675,7 +702,7 @@ struct CuiRenderer::Impl {
                     // an explicit width so a block child doesn't stretch to 100%.
                     ch = layoutNode(ks[i].id, cx + cursor, y + s.pad[0] + s.border,
                                     child_avail_cross > 0 ? child_avail_cross : avail_inner,
-                                    ks[i].main);
+                                    ks[i].main, definite_content_h);
                     c.y = y + s.pad[0] + s.border;
                     line_cross = std::max(line_cross, ch);
                     cursor += ks[i].main + s.gap + between;
@@ -688,7 +715,7 @@ struct CuiRenderer::Impl {
                     else if (s.align == Align::End) child_x = cx + avail_inner - cross;
                     else if (s.align == Align::Start) child_x = cx;
                     // re-layout at the final x to fix the subtree's absolute coords
-                    layoutNode(ks[i].id, child_x, y + s.pad[0] + s.border + inner_h, avail_inner);
+                    layoutNode(ks[i].id, child_x, y + s.pad[0] + s.border + inner_h, avail_inner, -1, definite_content_h);
                     inner_h += ks[i].main + s.gap;
                 }
             }
@@ -723,7 +750,7 @@ struct CuiRenderer::Impl {
                 } else {
                     double child_avail = avail_inner;
                     double used_w = c.style.width >= 0 ? c.style.width : avail_inner;
-                    double h = layoutNode(cid, cx, cy, child_avail);
+                    double h = layoutNode(cid, cx, cy, child_avail, -1, definite_content_h);
                     if (c.w < used_w && s.align == Align::Center) shiftX(cid, (used_w - c.w) / 2);
                     cy += h + c.style.margin[0] + c.style.margin[2];
                     inner_h += h + c.style.margin[0] + c.style.margin[2];
@@ -731,12 +758,20 @@ struct CuiRenderer::Impl {
             }
         }
 
-        // The element's own height.
+        // The element's own height. A percentage height resolves against the
+        // containing block's height only when that height is definite (CSS 10.5);
+        // otherwise the percentage computes to auto.
         double h;
-        if (s.height >= 0) h = s.height;
+        double explicit_h = s.height;
+        if (s.height_pct >= 0)
+            explicit_h = parent_definite_h >= 0 ? s.height_pct / 100.0 * parent_definite_h : -1;
+        double explicit_minh = s.min_height;
+        if (s.min_height_pct >= 0)
+            explicit_minh = parent_definite_h >= 0 ? s.min_height_pct / 100.0 * parent_definite_h : -1;
+        if (explicit_h >= 0) h = explicit_h;
         else {
             h = inner_h + s.pad[0] + s.pad[2] + s.border * 2;
-            if (s.min_height > h) h = s.min_height;
+            if (explicit_minh > h) h = explicit_minh;
         }
         n.h = h;
         // Wrap our own text (an element may carry a text child we already wrapped;
