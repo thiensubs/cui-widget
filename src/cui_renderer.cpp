@@ -20,6 +20,16 @@ namespace twidget {
 namespace {
 
 constexpr double kTickSeconds = 1.0 / 60;
+// Every property the transition engine animates. "all" fans out to this list;
+// readAnim() returns set=false for any a node doesn't actually have a value for,
+// so a fan-out only acts on properties present on the node.
+const char* const kAnimatableAll[] = {
+    "opacity", "color", "background-color", "border-color", "width", "height",
+    "min-height", "border-radius", "border-width", "font-size", "gap",
+    "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "top", "right", "bottom", "left",
+};
 constexpr double kDefaultFontSize = 15.0;
 constexpr double kDefaultLineHeight = 1.35;
 constexpr double kRootPaddingX = 12.0, kRootPaddingY = 8.0;
@@ -147,6 +157,9 @@ enum class Float { None, Left, Right };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
 enum class TextAlign { Left, Center, Right };
+// CSS transition timing function. The four named keywords map to cubic-bezier
+// control points; linear is the identity. This is the profile's supported set.
+enum class Ease { Linear, Ease, EaseIn, EaseOut, EaseInOut };
 
 struct Style {
     Display display = Display::Block;
@@ -196,6 +209,18 @@ struct Style {
     struct Track { double px = -1, pct = -1, fr = -1; };
     std::vector<Track> grid_cols, grid_rows;
     double row_gap = -1, column_gap = -1;   // -1 = unset (fall back to gap)
+    // CSS transitions (profile subset). Each entry is one comma-separated item of
+    // the `transition` shorthand (or the longhands), holding the watched property,
+    // the duration/delay in ms, and the timing function. duration_ms == 0 means the
+    // property is not animated (the CSS default), so a static document never runs
+    // the transition machinery at all.
+    struct TransitionSpec {
+        std::string prop;            // animatable property name, or "all"
+        double duration_ms = 0;      // 0 = no animation
+        double delay_ms = 0;
+        Ease ease = Ease::Ease;      // CSS default timing function
+    };
+    std::vector<TransitionSpec> transitions;
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
@@ -227,6 +252,191 @@ std::vector<Style::Track> parseTracks(const std::string& value) {
     for (char c : value) {
         if (std::isspace((unsigned char)c)) commit();
         else tok.push_back(c);
+    }
+    commit();
+    return out;
+}
+
+// ───────────── transitions: easing + animatable values ─────────────
+
+// Evaluate a cubic-bezier timing function at progress x (0..1). The four named
+// keyword easings are defined by their CSS control points; linear is identity.
+static double cubicBezier(double x1, double y1, double x2, double y2, double x) {
+    // Find the curve parameter u where bezierX(u) == x, then return bezierY(u).
+    // X(u) is monotonic for the profile's control points, so bisection is safe.
+    auto bez = [](double a, double b, double u) {
+        double v = 1 - u;
+        return 3 * a * v * v * u + 3 * b * v * u * u + u * u * u;
+    };
+    double lo = 0, hi = 1;
+    for (int i = 0; i < 32; i++) {
+        double mid = (lo + hi) / 2;
+        if (bez(x1, x2, mid) < x) lo = mid; else hi = mid;
+    }
+    double u = (lo + hi) / 2;
+    return bez(y1, y2, u);
+}
+static double applyEase(Ease e, double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    switch (e) {
+        case Ease::Linear:   return t;
+        case Ease::Ease:     return cubicBezier(0.25, 0.1, 0.25, 1.0, t);
+        case Ease::EaseIn:   return cubicBezier(0.42, 0.0, 1.0, 1.0, t);
+        case Ease::EaseOut:  return cubicBezier(0.0, 0.0, 0.58, 1.0, t);
+        case Ease::EaseInOut:return cubicBezier(0.42, 0.0, 0.58, 1.0, t);
+    }
+    return t;
+}
+
+// A transitionable property value: either a scalar (px length, opacity) or a color.
+// `set` is false when the property is not one the engine animates.
+struct AnimVal {
+    bool set = false;
+    bool is_color = false;
+    double num = 0;
+    Rgba col;
+};
+// Read the current value of an animatable property from a resolved style. Returns
+// set=false for properties the engine does not animate (and for unset lengths,
+// which keep their -1 sentinel and are skipped by the diff).
+static AnimVal readAnim(const Style& s, const std::string& p) {
+    AnimVal v;
+    auto num = [&](double d) { v.set = true; v.num = d; return v; };
+    auto col = [&](const Rgba& c) { v.set = true; v.is_color = true; v.col = c; return v; };
+    if (p == "opacity") return num(s.opacity);
+    if (p == "color") return col(s.color);
+    if (p == "background-color") return col(s.bg);
+    if (p == "border-color") return col(s.border_color);
+    if (p == "width") return s.width >= 0 ? num(s.width) : AnimVal{};
+    if (p == "height") return s.height >= 0 ? num(s.height) : AnimVal{};
+    if (p == "min-height") return s.min_height >= 0 ? num(s.min_height) : AnimVal{};
+    if (p == "border-radius") return num(s.radius);
+    if (p == "border-width") return num(s.border);
+    if (p == "font-size") return num(s.font_size);
+    if (p == "gap") return num(s.gap);
+    if (p == "padding-top") return num(s.pad[0]);
+    if (p == "padding-right") return num(s.pad[1]);
+    if (p == "padding-bottom") return num(s.pad[2]);
+    if (p == "padding-left") return num(s.pad[3]);
+    if (p == "margin-top") return num(s.margin[0]);
+    if (p == "margin-right") return num(s.margin[1]);
+    if (p == "margin-bottom") return num(s.margin[2]);
+    if (p == "margin-left") return num(s.margin[3]);
+    if (p == "top") return s.top >= 0 ? num(s.top) : AnimVal{};
+    if (p == "right") return s.right >= 0 ? num(s.right) : AnimVal{};
+    if (p == "bottom") return s.bottom >= 0 ? num(s.bottom) : AnimVal{};
+    if (p == "left") return s.left >= 0 ? num(s.left) : AnimVal{};
+    return AnimVal{};
+}
+static void writeAnim(Style& s, const std::string& p, const AnimVal& v) {
+    if (!v.set) return;
+    if (v.is_color) {
+        if (p == "color") s.color = v.col;
+        else if (p == "background-color") s.bg = v.col;
+        else if (p == "border-color") s.border_color = v.col;
+        return;
+    }
+    if (p == "opacity") s.opacity = (float)v.num;
+    else if (p == "width") s.width = v.num;
+    else if (p == "height") s.height = v.num;
+    else if (p == "min-height") s.min_height = v.num;
+    else if (p == "border-radius") s.radius = v.num;
+    else if (p == "border-width") s.border = v.num;
+    else if (p == "font-size") s.font_size = v.num;
+    else if (p == "gap") s.gap = v.num;
+    else if (p == "padding-top") s.pad[0] = v.num;
+    else if (p == "padding-right") s.pad[1] = v.num;
+    else if (p == "padding-bottom") s.pad[2] = v.num;
+    else if (p == "padding-left") s.pad[3] = v.num;
+    else if (p == "margin-top") s.margin[0] = v.num;
+    else if (p == "margin-right") s.margin[1] = v.num;
+    else if (p == "margin-bottom") s.margin[2] = v.num;
+    else if (p == "margin-left") s.margin[3] = v.num;
+    else if (p == "top") s.top = v.num;
+    else if (p == "right") s.right = v.num;
+    else if (p == "bottom") s.bottom = v.num;
+    else if (p == "left") s.left = v.num;
+}
+static bool animEq(const AnimVal& a, const AnimVal& b) {
+    if (a.set != b.set || a.is_color != b.is_color) return false;
+    if (!a.set) return true;
+    if (a.is_color) {
+        auto eq = [](float x, float y) { return std::fabs(x - y) < 1.f / 255.f; };
+        return eq(a.col.r, b.col.r) && eq(a.col.g, b.col.g) && eq(a.col.b, b.col.b) && eq(a.col.a, b.col.a);
+    }
+    return std::fabs(a.num - b.num) < 0.01;
+}
+static AnimVal lerpAnim(const AnimVal& a, const AnimVal& b, double t) {
+    AnimVal o = a;
+    if (a.is_color) {
+        o.col.r = a.col.r + (b.col.r - a.col.r) * t;
+        o.col.g = a.col.g + (b.col.g - a.col.g) * t;
+        o.col.b = a.col.b + (b.col.b - a.col.b) * t;
+        o.col.a = a.col.a + (b.col.a - a.col.a) * t;
+    } else {
+        o.num = a.num + (b.num - a.num) * t;
+    }
+    return o;
+}
+
+// Parse a CSS time ("300ms", "0.3s", ".5s") into milliseconds. Returns false if
+// the token is not a time.
+static bool parseTimeMs(const std::string& v, double& out_ms) {
+    double n = 0; char unit = 0;
+    if (std::sscanf(v.c_str(), "%lf%c", &n, &unit) < 1) return false;
+    out_ms = (unit == 's') ? n * 1000.0 : n;   // 'ms' or bare (treated as ms)
+    return true;
+}
+static Ease parseEase(const std::string& v) {
+    if (v.find("linear") != std::string::npos) return Ease::Linear;
+    if (v.find("ease-in-out") != std::string::npos) return Ease::EaseInOut;
+    if (v.find("ease-in") != std::string::npos) return Ease::EaseIn;
+    if (v.find("ease-out") != std::string::npos) return Ease::EaseOut;
+    if (v.find("ease") != std::string::npos) return Ease::Ease;
+    return Ease::Ease;
+}
+// Parse one item of the `transition` shorthand: "prop duration timing delay".
+// The first time is the duration, the second is the delay; a keyword is the
+// timing function. Missing parts keep CSS defaults (duration 0 = no animation).
+static Style::TransitionSpec parseTransitionItem(const std::string& item) {
+    Style::TransitionSpec spec;
+    std::string cur;
+    int times = 0;
+    auto commit = [&] {
+        if (cur.empty()) return;
+        double ms;
+        if (parseTimeMs(cur, ms)) {
+            if (times == 0) spec.duration_ms = ms; else if (times == 1) spec.delay_ms = ms;
+            times++;
+        } else if (cur == "linear" || cur.find("ease") != std::string::npos ||
+                   cur.find("cubic-bezier") != std::string::npos ||
+                   cur.find("step") != std::string::npos) {
+            spec.ease = parseEase(cur);
+        } else if (cur != "none" && cur != "initial" && cur != "inherit") {
+            spec.prop = cur;   // the property name (first non-time, non-keyword token)
+        }
+        cur.clear();
+    };
+    for (char c : item) {
+        if (std::isspace((unsigned char)c)) commit();
+        else cur.push_back(c);
+    }
+    commit();
+    return spec;
+}
+static std::vector<Style::TransitionSpec> parseTransitionList(const std::string& value) {
+    std::vector<Style::TransitionSpec> out;
+    std::string item;
+    auto commit = [&] {
+        if (item.empty()) return;
+        Style::TransitionSpec s = parseTransitionItem(item);
+        // A default-constructed item (no property, no duration) contributes nothing.
+        if (!s.prop.empty() || s.duration_ms > 0) out.push_back(s);
+        item.clear();
+    };
+    for (char c : value) {
+        if (c == ',') commit();
+        else item.push_back(c);
     }
     commit();
     return out;
@@ -335,6 +545,32 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         if (value.find("left") != std::string::npos) st.float_ = Float::Left;
         else if (value.find("right") != std::string::npos) st.float_ = Float::Right;
         else st.float_ = Float::None;
+    } else if (is("transition")) {
+        // Shorthand: "width 250ms ease-in-out, opacity .3s". Replaces the set.
+        st.transitions = parseTransitionList(value);
+    } else if (is("transition-property")) {
+        // Longhand: reset then add one spec per named property (duration 0 until
+        // a matching transition-duration is merged in computeStyle).
+        st.transitions.clear();
+        std::string cur;
+        auto commit = [&] {
+            if (!cur.empty()) { Style::TransitionSpec s; s.prop = cur; st.transitions.push_back(s); }
+            cur.clear();
+        };
+        for (char c : value) { if (c == ',') commit(); else cur.push_back(c); }
+        commit();
+    } else if (is("transition-duration") || is("transition-delay") || is("transition-timing-function")) {
+        // These refine the specs added by transition-property, positional per CSS.
+        std::vector<std::string> toks;
+        { std::string cur; auto cm=[&]{ if(!cur.empty()) toks.push_back(cur); cur.clear(); };
+          for (char c : value) { if (c==',') cm(); else cur.push_back(c); } cm(); }
+        bool isdur = is("transition-duration");
+        for (size_t i = 0; i < toks.size(); i++) {
+            if (st.transitions.size() <= i) st.transitions.resize(i + 1);
+            if (isdur) { double ms; if (parseTimeMs(toks[i], ms)) st.transitions[i].duration_ms = ms; }
+            else if (is("transition-delay")) { double ms; if (parseTimeMs(toks[i], ms)) st.transitions[i].delay_ms = ms; }
+            else st.transitions[i].ease = parseEase(toks[i]);
+        }
     } else if (is("top") || is("right") || is("bottom") || is("left")) {
         double x; if (parseLenPx(value, x)) {
             if (is("top")) st.top = x;
@@ -824,6 +1060,30 @@ struct CuiRenderer::Impl {
     double content_height = 0;
     int64_t seq = 1;
     std::vector<std::string> out;             // messages for the host
+    // ── transition state (see advanceTransitions / startTransitions) ──
+    // One running transition per (node, property). `from`/`to` are the values at
+    // the start/end of the change; `start_ms` is the anim clock time the (post-
+    // delay) interpolation begins. A finished run is erased, not kept.
+    struct TransRun {
+        AnimVal from, to;
+        double start_ms = 0, duration_ms = 0;
+        Ease ease = Ease::Ease;
+    };
+    // Last value we displayed for a (node, property), animated or not. This is the
+    // diff baseline so a change starts a transition from where the eye is now,
+    // not from the freshly-recomputed target. Absent = never animated.
+    std::map<int64_t, std::map<std::string, AnimVal>> anim_now_;
+    std::map<int64_t, std::map<std::string, TransRun>> trans_runs_;
+    // Animation clock. Wall-clock by default; a host/test can freeze it and step
+    // it deterministically via the {"type":"clock"} message.
+    bool clock_virtual_ = false;
+    double clock_virtual_now_ = 0;
+    double animNow() const {
+        if (clock_virtual_)
+            return clock_virtual_now_;
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 
     ~Impl() {
         if (ui) cui_destroy(ui);
@@ -1576,6 +1836,11 @@ struct CuiRenderer::Impl {
         for (auto& [id, n] : doc.nodes) if (n.tag == "body") { body = id; break; }
         if (!body) return;
         computeStyleAll(body);
+        // Transitions: the styles above are the targets. Detect changes against the
+        // last displayed values and start runs, then advance them to now so this
+        // relayout lays out from the interpolated value, not a hard jump to target.
+        startTransitions();
+        advanceTransitions();
         abs_nodes_.clear();
         Node& b = doc.nodes[body];
         double w = doc.width;
@@ -1610,6 +1875,105 @@ struct CuiRenderer::Impl {
     void computeStyleAll(int64_t id) {
         computeStyle(doc, id);
         for (int64_t c : doc.nodes[id].children) computeStyleAll(c);
+    }
+
+    // ───────────── transitions ─────────────
+    // Called after computeStyleAll: the freshly-computed `n.style` now holds the
+    // TARGET for every property. For each property this node transitions, diff the
+    // target against the last value we displayed (anim_now_). A change starts a
+    // new run from the displayed value to the target; no change leaves any active
+    // run alone (it keeps heading to the same target). duration_ms == 0 jumps.
+    void startTransitions() {
+        double now = animNow();
+        for (auto& [id, n] : doc.nodes) {
+            if (n.style.transitions.empty()) continue;
+            auto& nowMap = anim_now_[id];
+            auto& runMap = trans_runs_[id];
+            for (const auto& spec : n.style.transitions) {
+                if (spec.duration_ms <= 0) continue;          // not animated
+                if (spec.prop.empty()) continue;
+                // Resolve the watched property set: "all" fans out to every
+                // property the engine animates on this node; otherwise just the
+                // named one. For "all" we still only act on properties whose
+                // target is set (readAnim returns set=false for unset lengths).
+                std::vector<std::string> props;
+                if (spec.prop == "all") {
+                    for (const char* q : kAnimatableAll) props.push_back(q);
+                } else props.push_back(spec.prop);
+                for (const std::string& p : props) {
+                    AnimVal target = readAnim(n.style, p);
+                    if (!target.set) continue;
+                    auto itNow = nowMap.find(p);
+                    AnimVal displayed;
+                    bool haveDisplayed = false;
+                    if (itNow != nowMap.end()) { displayed = itNow->second; haveDisplayed = true; }
+                    if (!haveDisplayed) {
+                        // First time we see this property: record the target as the
+                        // baseline. CSS does not transition on initial style.
+                        nowMap[p] = target;
+                        continue;
+                    }
+                    // Already heading to this exact target? Leave the run alone.
+                    auto itRun = runMap.find(p);
+                    if (itRun != runMap.end() && animEq(itRun->second.to, target)) continue;
+                    // No actual change? Snap the baseline, drop any finished run.
+                    if (animEq(displayed, target)) {
+                        runMap.erase(p);
+                        nowMap[p] = target;
+                        continue;
+                    }
+                    // A real change: start a run from the displayed value.
+                    TransRun r;
+                    r.from = displayed;
+                    r.to = target;
+                    r.duration_ms = spec.duration_ms;
+                    r.start_ms = now + spec.delay_ms;
+                    r.ease = spec.ease;
+                    runMap[p] = r;
+                    nowMap[p] = displayed;   // stays at `from` until interpolation moves it
+                }
+            }
+        }
+    }
+
+    // Called each paint (and after startTransitions in relayout): move every active
+    // run forward to the anim clock's current time, write the interpolated value
+    // into the node's style so layout+paint use it, and retire finished runs.
+    // Returns true if any run is still active (the caller then keeps painting).
+    bool advanceTransitions() {
+        double now = animNow();
+        bool any_active = false;
+        for (auto& [id, runMap] : trans_runs_) {
+            auto itNode = doc.nodes.find(id);
+            if (itNode == doc.nodes.end()) continue;   // node removed; run is stale
+            Node& n = itNode->second;
+            auto& nowMap = anim_now_[id];
+            for (auto it = runMap.begin(); it != runMap.end();) {
+                const std::string& p = it->first;
+                TransRun& r = it->second;
+                double elapsed = now - r.start_ms;
+                if (elapsed < 0) {                          // still in the delay
+                    writeAnim(n.style, p, r.from);
+                    nowMap[p] = r.from;
+                    any_active = true;
+                    ++it;
+                    continue;
+                }
+                if (r.duration_ms <= 0 || elapsed >= r.duration_ms) {   // done
+                    writeAnim(n.style, p, r.to);
+                    nowMap[p] = r.to;
+                    it = runMap.erase(it);
+                    continue;
+                }
+                double t = applyEase(r.ease, elapsed / r.duration_ms);
+                AnimVal v = lerpAnim(r.from, r.to, t);
+                writeAnim(n.style, p, v);
+                nowMap[p] = v;
+                any_active = true;
+                ++it;
+            }
+        }
+        return any_active;
     }
 
     // ───────────── paint ─────────────
@@ -1896,6 +2260,13 @@ struct CuiRenderer::Impl {
     void handleMessage(const Json& msg) {
         std::string type = msg["type"].asString();
         if (type == "ops") { applyOps(msg["ops"]); relayout(); }
+        else if (type == "clock") {
+            // Test/determinism hook: freeze the animation clock and step it by hand.
+            // With virtual=true animNow() returns `now` instead of wall-clock, so a
+            // host can render exact transition frames. Not part of the widget profile.
+            clock_virtual_ = msg["virtual"].asBool();
+            if (const Json* nowv = msg.find("now")) clock_virtual_now_ = nowv->asNumber();
+        }
         else if (type == "query") {
             Json answer = answerQuery(msg["query"]);
             Json result = Json::object();
@@ -2070,8 +2441,15 @@ CuiRenderer::Frame CuiRenderer::paint() {
     cui_begin_frame(impl_->ui, 1.0f / 60.0f);
     cui_draw_rect(impl_->ui, cui_rect{0, 0, (float)impl_->doc.width, (float)cssH},
                   CUI_CORNERS(0), impl_->bubbleColor());
+    // Move every active transition to the current anim-clock time and write the
+    // interpolated values into the node styles before painting. Static documents
+    // have no runs, so this is a no-op pass over an empty map.
+    bool animating = impl_->advanceTransitions();
     impl_->paintNode(body);
     cui_end_frame(impl_->ui);
+    // An in-flight transition changes pixels every frame: ask the clock for the
+    // next one. When the last run retires this stops on its own.
+    if (animating) schedulePaint();
 #ifdef CUIW_LAYOUT_DEBUG
     fprintf(stderr, "[paint] cssH=%.1f content_height=%.1f doc.width=%.1f\n", cssH, impl_->content_height, impl_->doc.width);
     for (const auto& [id, n] : impl_->doc.nodes) {

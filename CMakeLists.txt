@@ -91,4 +91,10 @@ add_executable(pxdiff tools/pxdiff.c)
 target_link_libraries(pxdiff PRIVATE cui-widget)
 target_include_directories(pxdiff PRIVATE "${CUI_ROOT}/third_party")
 
+# Transition self-check: drives a color transition on a virtual clock and asserts
+# the rendered pixel interpolates start -> mid -> end. Deterministic (no sleeping);
+# a silent transition regression fails the build. Run: ./build/cuiw-transitions
+add_executable(cuiw-transitions tests/transitions.c)
+target_link_libraries(cuiw-transitions PRIVATE cui-widget)
+
 message(STATUS "cui-widget: CUI_ROOT=${CUI_ROOT}")

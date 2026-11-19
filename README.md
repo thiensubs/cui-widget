@@ -120,7 +120,7 @@ push. A deliberate change is a **deliberate golden update**: regenerate with
 
 ## Capabilities
 
-A **block + flexbox subset** of CSS — **23 of 27** tracked features: block & flex
+A **block + flexbox subset** of CSS — **24 of 27** tracked features: block & flex
 layout (incl. flex-wrap), id/class/tag selectors, border-radius, text-align,
 font-weight, min-height, `vertical-align` (super/sub/middle/length), CSS variables
 (`var()`, custom properties, `:root`), opacity compositing, structural
@@ -129,9 +129,11 @@ pseudo-classes (`:first-child`, `:last-child`, `:nth-child(an+b)`/`odd`/`even` p
 document width), floats (`float: left`/`right`, inline + block wrap around),
 percent width & height, inline layout, CSS tables (auto column widths,
 `colspan`), `overflow: hidden` clipping, `text-decoration`, `position: absolute`,
-grid (`display: grid`, `grid-template-columns`/`rows`, `gap`; auto-placement).
+grid (`display: grid`, `grid-template-columns`/`rows`, `gap`; auto-placement),
+transitions (`transition` shorthand + longhands, `linear`/`ease`/`ease-in`/
+`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths).
 
-Not yet: transitions, keyframes, canvas, inline SVG.
+Not yet: keyframes, canvas, inline SVG.
 Full table: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
 > **Honest limitation.** This is a subset engine, not a browser layout engine.
