@@ -14,7 +14,7 @@ Two rules govern this table:
 
 ## The matrix
 
-**Supported — 12**
+**Supported — 17**
 
 | feature | enum | notes |
 | --- | --- | --- |
@@ -28,6 +28,7 @@ Two rules govern this table:
 | text-align | `CUIW_FEATURE_TEXT_ALIGN` | left / center / right |
 | font-weight | `CUIW_FEATURE_FONT_WEIGHT` | normal / bold |
 | min-height | `CUIW_FEATURE_MIN_HEIGHT` | per-node minimum block size |
+| vertical-align | `CUIW_FEATURE_VERTICAL_ALIGN` | `super` / `sub` / `middle` / px length on inline runs; shifts the segment baseline, does not change line height |
 | percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | % width & height resolve against the containing block; % height needs a definite parent height (CSS 10.5) |
 | inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | runs of inline siblings (text, span/em/strong/a/…) flow on shared line boxes and wrap as a unit; per-segment color/weight |
 | tables | `CUIW_FEATURE_TABLES` | `table`/`tr`/`td`/`th`, auto column widths, `colspan`, row heights, cell stretch; no `rowspan` yet |
@@ -35,7 +36,7 @@ Two rules govern this table:
 | text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | out-of-flow box against the nearest positioned ancestor's padding box; `top`/`right`/`bottom`/`left` offsets, shrink-to-fit or explicit width. No `z-index` stacking contexts yet |
 
-**Not yet — 14**
+**Not yet — 10**
 
 | feature | enum | status |
 | --- | --- | --- |
@@ -50,7 +51,7 @@ Two rules govern this table:
 | canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
 | inline-svg | `CUIW_FEATURE_INLINE_SVG` | no SVG |
 
-**Totals:** 26 tracked, 9 supported, 17 not yet.
+**Totals:** 27 tracked, 17 supported, 10 not yet.
 
 ## How to check a document against this
 

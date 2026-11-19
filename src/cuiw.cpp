@@ -177,6 +177,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_TEXT_ALIGN:
         case CUIW_FEATURE_FONT_WEIGHT:
         case CUIW_FEATURE_MIN_HEIGHT:
+        case CUIW_FEATURE_VERTICAL_ALIGN:
         case CUIW_FEATURE_PERCENT_HEIGHT:
         case CUIW_FEATURE_INLINE_LAYOUT:
         case CUIW_FEATURE_TABLES:
@@ -201,6 +202,7 @@ const char *cuiw_feature_name(cuiw_feature f) {
         case CUIW_FEATURE_TEXT_ALIGN: return "text-align";
         case CUIW_FEATURE_FONT_WEIGHT: return "font-weight";
         case CUIW_FEATURE_MIN_HEIGHT: return "min-height";
+        case CUIW_FEATURE_VERTICAL_ALIGN: return "vertical-align";
         case CUIW_FEATURE_ABSOLUTE_POSITION: return "position:absolute";
         case CUIW_FEATURE_PERCENT_HEIGHT: return "percent-height";
         case CUIW_FEATURE_INLINE_LAYOUT: return "inline-layout";

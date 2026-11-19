@@ -137,6 +137,9 @@ enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class TextDecoration { None, Underline, LineThrough };
 enum class Overflow { Visible, Hidden };
+// Vertical alignment of an inline run relative to the line's baseline. Stored as
+// a resolved CSS-px shift (negative = raise) so painting is a plain y offset.
+enum class VAlign { Baseline, Shift };
 enum class Position { Static, Relative, Absolute };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
@@ -167,6 +170,10 @@ struct Style {
     bool disabled = false;
     TextDecoration text_decoration = TextDecoration::None;
     Overflow overflow = Overflow::Visible;
+    VAlign valign = VAlign::Baseline;
+    // Resolved vertical-align shift in CSS px (negative = raise). Non-zero only
+    // when valign == VAlign::Shift.
+    double valign_shift = 0;
     Position position = Position::Static;
     // top/right/bottom/left offsets. -1 = unset (auto). Resolved against the
     // nearest positioned ancestor's padding box at layout time.
@@ -238,6 +245,24 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     } else if (is("overflow")) {
         // hidden / clip / auto / scroll all clip content; visible does not.
         st.overflow = value.find("visible") != std::string::npos ? Overflow::Visible : Overflow::Hidden;
+    } else if (is("vertical-align")) {
+        // super/sub/middle resolve against the element's font size; a px length
+        // is taken literally. Positive = raise (CSS), stored as a negative y shift.
+        if (value.find("super") != std::string::npos) {
+            st.valign = VAlign::Shift; st.valign_shift = -0.33 * st.font_size;
+        } else if (value.find("sub") != std::string::npos) {
+            st.valign = VAlign::Shift; st.valign_shift = 0.33 * st.font_size;
+        } else if (value.find("middle") != std::string::npos) {
+            st.valign = VAlign::Shift; st.valign_shift = -0.25 * st.font_size;
+        } else {
+            double x; char end = 0;
+            if (std::sscanf(value.c_str(), "%lf%c", &x, &end) >= 1 &&
+                (end == 0 || end == 'p')) {   // bare number or px
+                st.valign = VAlign::Shift; st.valign_shift = -x;
+            } else {
+                st.valign = VAlign::Baseline; st.valign_shift = 0;   // baseline / top / bottom
+            }
+        }
     } else if (is("position")) {
         if (value.find("absolute") != std::string::npos) st.position = Position::Absolute;
         else if (value.find("relative") != std::string::npos) st.position = Position::Relative;
@@ -485,6 +510,13 @@ void computeStyle(Doc& d, int64_t id) {
         // carries underline/line-through, but the text is drawn by the child text
         // node, which must inherit the decoration to draw the line.
         n.style.text_decoration = p->style.text_decoration;
+        // vertical-align is not a CSS-inherited property, but the inline run
+        // applies the shift from the text node's own style. Propagate the nearest
+        // styled ancestor's shift down to the text so <span class=sup>text</span>
+        // raises its text. A vertical-align set directly on the text's own
+        // author/inline declarations overrides this below.
+        n.style.valign = p->style.valign;
+        n.style.valign_shift = p->style.valign_shift;
     }
     // Author rules: tag rules, then class rules, then id rules (later wins).
     for (const Rule& r : d.sheet) {
@@ -648,7 +680,7 @@ struct CuiRenderer::Impl {
             if (cursor > 0 && cursor + sw + wd.w > avail_inner + 0.5) {
                 total += line_h; cursor = 0; line_h = 0; sw = 0;
             }
-            tn.segs.push_back({wd.text, cx + cursor + sw, cy + total, wd.w});
+            tn.segs.push_back({wd.text, cx + cursor + sw, cy + total + tn.style.valign_shift, wd.w});
             cursor += sw + wd.w;
             line_h = std::max(line_h, wd.lh);
         }

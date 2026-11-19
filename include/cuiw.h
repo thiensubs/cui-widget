@@ -154,6 +154,7 @@ typedef enum cuiw_feature {
     CUIW_FEATURE_TEXT_ALIGN,
     CUIW_FEATURE_FONT_WEIGHT,
     CUIW_FEATURE_MIN_HEIGHT,
+    CUIW_FEATURE_VERTICAL_ALIGN,
     /// Not yet: the list below is what the engine still lacks.
     CUIW_FEATURE_ABSOLUTE_POSITION,
     CUIW_FEATURE_PERCENT_HEIGHT,

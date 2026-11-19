@@ -120,11 +120,11 @@ push. A deliberate change is a **deliberate golden update**: regenerate with
 
 ## Capabilities
 
-A **block + flexbox subset** of CSS — **16 of 26** tracked features: block & flex
+A **block + flexbox subset** of CSS — **17 of 27** tracked features: block & flex
 layout (incl. flex-wrap), id/class/tag selectors, border-radius, text-align,
-font-weight, min-height, percent width & height, inline layout, CSS tables
-(auto column widths, `colspan`), `overflow: hidden` clipping, `text-decoration`,
-`position: absolute`.
+font-weight, min-height, `vertical-align` (super/sub/middle/length), percent width
+& height, inline layout, CSS tables (auto column widths, `colspan`), `overflow:
+hidden` clipping, `text-decoration`, `position: absolute`.
 
 Not yet: grid, floats, CSS variables, media queries, transitions, keyframes,
 opacity compositing, pseudo-classes (beyond `:disabled`), canvas, inline SVG.
