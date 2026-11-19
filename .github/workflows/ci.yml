@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run redundant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # libcui-widget draws through CUI, so CI pins the exact CUI release the
+  # library was built and pixel-tested against. Bump this together with the
+  # golden images: a CUI rasterizer/font change can shift pixels.
+  CUI_REF: v1.4.0
+  CUI_REPO: https://github.com/yappologistic/CUI.git
+
+jobs:
+  # One job per OS. Each builds CUI, then libcui-widget, renders the reference
+  # widget app headless (software rasterizer — no window, no GPU, no display),
+  # and compares the pixels against the committed golden images. Because CUI
+  # bundles its fonts and rasterizes glyphs itself (stb_truetype), the rendered
+  # pixels are identical across Linux, macOS and Windows, so one set of goldens
+  # gates every platform.
+  build-and-pixel-test:
+    name: ${{ matrix.os }} (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: gcc
+            generator: Ninja
+            extra: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+          - os: ubuntu-24.04
+            name: clang
+            generator: Ninja
+            extra: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          - os: macos-latest
+            name: clang
+            generator: Ninja
+            extra: ""
+          - os: windows-2022
+            name: MSVC
+            generator: "Visual Studio 17 2022"
+            extra: ""
+
+    steps:
+      - name: Check out libcui-widget
+        uses: actions/checkout@v4
+
+      - name: Check out CUI (${{ env.CUI_REF }})
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${CUI_REF}" "${CUI_REPO}" "$GITHUB_WORKSPACE/cui"
+          echo "CUI_ROOT=$GITHUB_WORKSPACE/cui" >> "$GITHUB_ENV"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          # X11/GL headers are needed only to compile libcui's window layer;
+          # the pixel test itself renders headless and never opens a display.
+          sudo apt-get install -y -q ninja-build libx11-dev libgl-dev
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Build CUI (libcui)
+        shell: bash
+        run: |
+          cmake -S "$CUI_ROOT" -B "$CUI_ROOT/build" -G "${{ matrix.generator }}" \
+            ${{ matrix.extra }} -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$CUI_ROOT/build" --config Release
+
+      - name: Build libcui-widget (+ example app + pxdiff)
+        shell: bash
+        run: |
+          cmake -S . -B build -G "${{ matrix.generator }}" \
+            ${{ matrix.extra }} -DCMAKE_BUILD_TYPE=Release -DCUI_ROOT="$CUI_ROOT"
+          cmake --build build --config Release
+
+      - name: Render the reference widget app
+        shell: bash
+        run: |
+          mkdir -p actual
+          # Headless: paints through CUI's software rasterizer, no display.
+          ./build/widget-app actual 2>&1 | tee render.log
+          test -f actual/widget-light.png
+          test -f actual/widget-dark.png
+
+      # The regression gate: compare each rendered PNG against its golden
+      # pixel by pixel. Byte-exact by default (tol 0, max 0%). A real layout
+      # or paint change fails here; see tools/pxdiff.c for the knobs.
+      - name: Pixel-compare against golden images
+        shell: bash
+        run: |
+          set -e
+          PXDIFF=$(find build -name 'pxdiff*' -type f | head -1)
+          "$PXDIFF" tests/golden/widget-light.png actual/widget-light.png --diff actual/diff-light.png
+          "$PXDIFF" tests/golden/widget-dark.png  actual/widget-dark.png  --diff actual/diff-dark.png
+
+      # Always upload the render log and any diff images so a failure can be
+      # diagnosed from the run, not reproduced locally.
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: widget-pixels-${{ matrix.os }}-${{ matrix.name }}
+          path: |
+            actual/**
+            render.log
+          if-no-files-found: ignore

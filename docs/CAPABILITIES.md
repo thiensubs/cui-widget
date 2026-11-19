@@ -1,0 +1,83 @@
+# libcui-widget — capability matrix
+
+The honest list of what the layout engine does and does not implement. This is
+measured, not aspirational: every row below is the output of `cuiw_feature_matrix`
+from the shipped `build/libcui-widget.a` (version `0.1.0`, CUI `1.4.0`).
+
+Two rules govern this table:
+
+1. **Query, don't assume.** Call `cuiw_has_feature(f)` / `cuiw_feature_matrix(...)`
+   at runtime. Never hard-code an assumption about a feature.
+2. **Unsupported degrades, never corrupts.** A feature the engine lacks is skipped
+   or approximated; it does not silently mis-render or crash. The safe path is to
+   design documents within the SUPPORTED set.
+
+## The matrix
+
+**Supported — 9**
+
+| feature | enum | notes |
+| --- | --- | --- |
+| block layout | `CUIW_FEATURE_BLOCK` | vertical flow, margins, padding |
+| flex layout | `CUIW_FEATURE_FLEX` | row & column, gaps, alignment, flex-grow |
+| id selector | `CUIW_FEATURE_ID_SELECTOR` | `#id` |
+| class selector | `CUIW_FEATURE_CLASS_SELECTOR` | `.class` |
+| tag selector | `CUIW_FEATURE_TAG_SELECTOR` | element name |
+| border-radius | `CUIW_FEATURE_BORDER_RADIUS` | rounded corners (drawn via libcui) |
+| text-align | `CUIW_FEATURE_TEXT_ALIGN` | left / center / right |
+| font-weight | `CUIW_FEATURE_FONT_WEIGHT` | normal / bold |
+| min-height | `CUIW_FEATURE_MIN_HEIGHT` | per-node minimum block size |
+
+**Not yet — 17**
+
+| feature | enum | status |
+| --- | --- | --- |
+| flex-wrap | `CUIW_FEATURE_FLEX_WRAP` | single-line flex only |
+| position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | not implemented |
+| percent-height | `CUIW_FEATURE_PERCENT_HEIGHT` | percent *width* works; height does not |
+| inline layout | `CUIW_FEATURE_INLINE_LAYOUT` | inline flow / inline-block |
+| tables | `CUIW_FEATURE_TABLES` | no table model |
+| grid | `CUIW_FEATURE_GRID` | no CSS grid |
+| floats | `CUIW_FEATURE_FLOATS` | no float |
+| css-variables | `CUIW_FEATURE_CSS_VARIABLES` | `var()` not resolved |
+| media-queries | `CUIW_FEATURE_MEDIA_QUERIES` | none |
+| transitions | `CUIW_FEATURE_TRANSITIONS` | static styles only |
+| keyframes | `CUIW_FEATURE_KEYFRAMES` | no animation |
+| overflow-scroll | `CUIW_FEATURE_OVERFLOW_SCROLL` | content is laid out, not scrolled |
+| text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | no underline/line-through |
+| opacity-compositing | `CUIW_FEATURE_OPACITY_COMPOSITING` | alpha not composited per-node |
+| pseudo-classes | `CUIW_FEATURE_PSEUDO_CLASSES` | `:disabled` only |
+| canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
+| inline-svg | `CUIW_FEATURE_INLINE_SVG` | no SVG |
+
+**Totals:** 26 tracked, 9 supported, 17 not yet.
+
+## How to check a document against this
+
+```c
+#include "cuiw.h"
+#include <stdio.h>
+
+static void report(void) {
+    uint8_t m[CUIW_FEATURE__COUNT];
+    size_t n = cuiw_feature_matrix(m, CUIW_FEATURE__COUNT);
+    for (size_t i = 0; i < n; i++)
+        printf("%-12s %s\n", m[i] ? "supported" : "unsupported",
+               cuiw_feature_name((cuiw_feature)i));
+}
+```
+
+Or from the shell, rebuild the probe the README links:
+
+```sh
+./build/cuiw-render "" cuiw-render.png   # a correct render is the end-to-end check
+```
+
+## Design guidance within the subset
+
+- Lay out with **block and flex**; avoid grid, tables, floats, absolute.
+- Size with **fixed / min-height**; do not rely on percent-height.
+- Style with the supported properties; treat the rest as no-ops.
+- Use the `CUIW_FEATURE_*` enum as your compile-time checklist when authoring
+  templates: if a template needs an unsupported feature, either change the template
+  or extend the engine (each feature is a bounded, testable unit).
