@@ -33,12 +33,12 @@ Two rules govern this table:
 | tables | `CUIW_FEATURE_TABLES` | `table`/`tr`/`td`/`th`, auto column widths, `colspan`, row heights, cell stretch; no `rowspan` yet |
 | overflow-scroll | `CUIW_FEATURE_OVERFLOW_SCROLL` | `overflow: hidden` clips descendant content (text + children) to the padding box; `visible` does not. Content is clipped, not scrolled |
 | text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
+| position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | out-of-flow box against the nearest positioned ancestor's padding box; `top`/`right`/`bottom`/`left` offsets, shrink-to-fit or explicit width. No `z-index` stacking contexts yet |
 
 **Not yet — 14**
 
 | feature | enum | status |
 | --- | --- | --- |
-| position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | not implemented |
 | grid | `CUIW_FEATURE_GRID` | no CSS grid |
 | floats | `CUIW_FEATURE_FLOATS` | no float |
 | css-variables | `CUIW_FEATURE_CSS_VARIABLES` | `var()` not resolved |
@@ -75,7 +75,7 @@ Or from the shell, rebuild the probe the README links:
 
 ## Design guidance within the subset
 
-- Lay out with **block and flex**; avoid grid, floats, absolute. Tables work for simple data grids.
+- Lay out with **block and flex**; avoid grid and floats. Use `position: absolute` for badges and overlays.
 - Size with **fixed / min-height**; do not rely on percent-height.
 - Style with the supported properties; treat the rest as no-ops.
 - Use the `CUIW_FEATURE_*` enum as your compile-time checklist when authoring

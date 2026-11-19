@@ -137,6 +137,7 @@ enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class TextDecoration { None, Underline, LineThrough };
 enum class Overflow { Visible, Hidden };
+enum class Position { Static, Relative, Absolute };
 enum class Justify { Start, Center, End, Between };
 enum class Align { Stretch, Start, Center, End };
 enum class TextAlign { Left, Center, Right };
@@ -166,6 +167,10 @@ struct Style {
     bool disabled = false;
     TextDecoration text_decoration = TextDecoration::None;
     Overflow overflow = Overflow::Visible;
+    Position position = Position::Static;
+    // top/right/bottom/left offsets. -1 = unset (auto). Resolved against the
+    // nearest positioned ancestor's padding box at layout time.
+    double top = -1, right = -1, bottom = -1, left = -1;
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
@@ -233,6 +238,17 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     } else if (is("overflow")) {
         // hidden / clip / auto / scroll all clip content; visible does not.
         st.overflow = value.find("visible") != std::string::npos ? Overflow::Visible : Overflow::Hidden;
+    } else if (is("position")) {
+        if (value.find("absolute") != std::string::npos) st.position = Position::Absolute;
+        else if (value.find("relative") != std::string::npos) st.position = Position::Relative;
+        else st.position = Position::Static;
+    } else if (is("top") || is("right") || is("bottom") || is("left")) {
+        double x; if (parseLenPx(value, x)) {
+            if (is("top")) st.top = x;
+            else if (is("right")) st.right = x;
+            else if (is("bottom")) st.bottom = x;
+            else st.left = x;
+        }
     }
 }
 
@@ -821,6 +837,7 @@ struct CuiRenderer::Impl {
             for (int64_t cid : n.children) {
                 Node& c = doc.nodes[cid];
                 if (c.kind == Node::Comment || c.style.display == Display::None) continue;
+                if (outOfFlow(c)) continue;   // an abs child never sizes its parent
                 double cw;
                 if (c.style.width >= 0) cw = c.style.width;
                 else if (c.kind == Node::Text) cw = textWidth(c.style, c.data);
@@ -857,6 +874,7 @@ struct CuiRenderer::Impl {
             for (int64_t cid : n.children) {
                 Node& c = doc.nodes[cid];
                 if (c.kind == Node::Comment || c.style.display == Display::None) continue;
+                if (outOfFlow(c)) { abs_nodes_.push_back(cid); continue; }
                 kids.push_back(cid);
             }
             bool row = s.flex_dir == FlexDir::Row;
@@ -996,6 +1014,7 @@ struct CuiRenderer::Impl {
                 int64_t cid = n.children[ci];
                 Node& c = doc.nodes[cid];
                 if (c.kind == Node::Comment || c.style.display == Display::None) { ci++; continue; }
+                if (outOfFlow(c)) { abs_nodes_.push_back(cid); ci++; continue; }
                 bool c_inline = c.kind == Node::Text || c.style.display == Display::Inline;
                 if (!c_inline) {
                     double child_avail = avail_inner;
@@ -1013,6 +1032,7 @@ struct CuiRenderer::Impl {
                     int64_t rid = n.children[ci];
                     Node& r = doc.nodes[rid];
                     if (r.kind == Node::Comment || r.style.display == Display::None) { ci++; continue; }
+                    if (outOfFlow(r)) { abs_nodes_.push_back(rid); ci++; continue; }
                     bool r_inline = r.kind == Node::Text || r.style.display == Display::Inline;
                     if (!r_inline) break;
                     run.push_back(rid);
@@ -1048,12 +1068,60 @@ struct CuiRenderer::Impl {
     void shiftY(int64_t id, double dy) {
         Node& n = doc.nodes[id];
         n.y += dy;
+        // Inline content paints from its segments' own coordinates, not n.y, so a
+        // subtree shift must move the segments too or the text stays behind.
+        for (auto& sg : n.segs) sg.y += dy;
         for (int64_t c : n.children) shiftY(c, dy);
     }
     void shiftX(int64_t id, double dx) {
         Node& n = doc.nodes[id];
         n.x += dx;
+        for (auto& sg : n.segs) sg.x += dx;
         for (int64_t c : n.children) shiftX(c, dx);
+    }
+    // An absolutely-positioned element is out of flow: it does not advance the
+    // parent's cursor and does not contribute to its height.
+    bool outOfFlow(const Node& n) const { return n.style.position == Position::Absolute; }
+
+    // Position every collected absolute node against its nearest positioned
+    // ancestor (position != static). Called after the normal flow layout, so the
+    // containing block's box is final. Offsets resolve against the containing
+    // block's padding box (CSS 10.1); a missing axis falls back to the static
+    // position the node would have had at the top-left of that box.
+    void resolveAbsolute() {
+        for (int64_t id : abs_nodes_) {
+            Node& n = doc.nodes[id];
+            if (n.style.position != Position::Absolute) continue;
+            // Nearest positioned ancestor.
+            int64_t cb = n.parent;
+            while (cb && doc.nodes[cb].style.position == Position::Static) cb = doc.nodes[cb].parent;
+            if (!cb) for (auto& [bid, bn] : doc.nodes) if (bn.tag == "body") { cb = bid; break; }
+            if (!cb) continue;
+            Node& c = doc.nodes[cb];
+            // Containing block = the padding box of the positioned ancestor.
+            double cbx = c.x + c.style.border;
+            double cby = c.y + c.style.border;
+            double cbw = std::max(0.0, c.w - c.style.border * 2);
+            double cbh = std::max(0.0, c.h - c.style.border * 2);
+            // Shrink-to-fit / explicit width, resolved against the containing block.
+            double avail = cbw;
+            if (n.style.left >= 0 && n.style.right >= 0) avail = std::max(0.0, cbw - n.style.left - n.style.right);
+            double saved_ml = n.style.margin[3], saved_mr = n.style.margin[1];
+            n.style.margin[3] = n.style.margin[1] = 0;   // offsets, not margins, place an abs box
+            layoutNode(id, cbx, cby, avail);
+            n.style.margin[3] = saved_ml; n.style.margin[1] = saved_mr;
+            // layoutNode sets x/w but leaves y alone, so pin the box to the origin
+            // it was measured at before shifting — otherwise a stale y makes the
+            // delta 0 on a re-layout while the children sit at the origin.
+            n.x = cbx; n.y = cby;
+            double nx = cbx, ny = cby;
+            if (n.style.left >= 0) nx = cbx + n.style.left;
+            else if (n.style.right >= 0) nx = cbx + cbw - n.style.right - n.w;
+            if (n.style.top >= 0) ny = cby + n.style.top;
+            else if (n.style.bottom >= 0) ny = cby + cbh - n.style.bottom - n.h;
+            if (nx != n.x) shiftX(id, nx - n.x);
+            if (ny != n.y) shiftY(id, ny - n.y);
+        }
     }
 
     void relayout() {
@@ -1063,6 +1131,7 @@ struct CuiRenderer::Impl {
         for (auto& [id, n] : doc.nodes) if (n.tag == "body") { body = id; break; }
         if (!body) return;
         computeStyleAll(body);
+        abs_nodes_.clear();
         Node& b = doc.nodes[body];
         double w = doc.width;
         b.style.margin[3] = b.style.margin[1] = 0;   // the UA body margin is the root padding
@@ -1079,6 +1148,7 @@ struct CuiRenderer::Impl {
                 b.style.pad[3], b.style.pad[1], b.style.pad[0], b.style.pad[2], doc.width);
 #endif
         double h = layoutNode(body, 0, 0, w);
+        resolveAbsolute();
         content_height = h;
         // Renderer → host: the document height in CSS px drives the bubble resize
         // (widget_host.cpp reads {type:"size"}). Clamped to the host's [50, 600].
@@ -1280,6 +1350,10 @@ struct CuiRenderer::Impl {
     }
 
     std::map<int64_t, std::string> pending_adopt_;
+    // Nodes with position:absolute, collected during the flow layout (they are
+    // skipped from normal flow) and positioned against their nearest positioned
+    // ancestor once that ancestor's box is final.
+    std::vector<int64_t> abs_nodes_;
 
     int64_t findHost(const std::string& tag) const {
         for (const auto& [id, n] : doc.nodes) if (n.tag == tag) return id;
