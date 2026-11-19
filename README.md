@@ -198,9 +198,9 @@ images together with the code change.
 
 The layout engine implements a **block + flexbox subset** of CSS. Supported today:
 block & flex layout (incl. flex-wrap), id/class/tag selectors, border-radius, text-align,
-font-weight, min-height, percent width & height — **11 of 26** tracked features.
+font-weight, min-height, percent width & height, inline layout — **12 of 26** tracked features.
 
-Not yet: absolute positioning, inline layout, tables,
+Not yet: absolute positioning, tables,
 grid, floats, CSS variables, media queries, transitions, keyframes, overflow
 scroll, text-decoration, opacity compositing, pseudo-classes (beyond `:disabled`),
 canvas, inline SVG. The full table lives in

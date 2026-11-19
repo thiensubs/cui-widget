@@ -132,7 +132,7 @@ std::vector<double> boxValues(const std::string& v) {
     return out;                                                          // t r b l
 }
 
-enum class Display { Block, Flex, None };
+enum class Display { Block, Flex, Inline, None };
 enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class Justify { Start, Center, End, Between };
@@ -173,6 +173,7 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     if (is("display")) {
         if (value == "flex") st.display = Display::Flex;
         else if (value == "none") st.display = Display::None;
+        else if (value.find("inline") != std::string::npos) st.display = Display::Inline;
         else st.display = Display::Block;
     } else if (is("flex-direction")) {
         st.flex_dir = value.find("column") != std::string::npos ? FlexDir::Column : FlexDir::Row;
@@ -302,6 +303,11 @@ struct Node {
     struct Line { std::string text; double width; };
     std::vector<Line> lines;
     double line_height_px = 0;
+    // Inline layout: when this node participates in an inline flow run its text is
+    // stored as positioned segments (absolute CSS px) instead of stacked line
+    // boxes; paintNode draws segments when non-empty.
+    struct Seg { std::string text; double x, y, w; };
+    std::vector<Seg> segs;
 };
 
 struct Doc {
@@ -388,6 +394,13 @@ void applyUaDefaults(Doc& d, Node& n) {
         s.bold = true; s.font_weight = 500;
     }
     else if (t == "br") { s.display = Display::Block; s.height = 0; }
+    // Phrasing content flows inline by default (CSS 9.2.2). Text nodes are inline
+    // by nature; these elements join their inline siblings on a shared line box.
+    else if (t == "span" || t == "a" || t == "em" || t == "i" || t == "strong" ||
+             t == "b" || t == "small" || t == "code" || t == "u" || t == "s" ||
+             t == "mark" || t == "sub" || t == "sup" || t == "abbr" || t == "cite" ||
+             t == "q" || t == "time" || t == "var" || t == "kbd" || t == "samp")
+        s.display = Display::Inline;
 }
 
 // The UA layer's button tokens; overridable by the author.
@@ -424,7 +437,13 @@ void computeStyle(Doc& d, int64_t id) {
     // already final here (computeStyleAll walks parent-before-child), and the
     // author rules below can still override it on this node — the cascade order
     // is inherited value, then this node's own declarations.
-    if (n.parent) if (Node* p = node(d, n.parent)) n.style.text_align = p->style.text_align;
+    if (n.parent) if (Node* p = node(d, n.parent)) {
+        n.style.text_align = p->style.text_align;
+        // color inherits by default (CSS 16.1). applyUaDefaults seeded the theme
+        // text color; the parent's (possibly author-set) color overrides it here,
+        // and this node's own author/inline declarations override that below.
+        n.style.color = p->style.color;
+    }
     // Author rules: tag rules, then class rules, then id rules (later wins).
     for (const Rule& r : d.sheet) {
         bool match = (!r.tag.empty() && r.tag == n.tag) || (!r.cls.empty() && hasClass(n, r.cls))
@@ -531,6 +550,95 @@ struct CuiRenderer::Impl {
             sum += intrinsicWidth(cid) + c.style.margin[3] + c.style.margin[1];
         }
         return sum + s.pad[1] + s.pad[3] + s.border * 2;
+    }
+
+    // Flatten an inline subtree to its ordered text nodes (the nodes that actually
+    // paint glyphs) and the inline element wrappers (for bounding boxes).
+    void flattenInline(int64_t id, std::vector<int64_t>& texts, std::vector<int64_t>& elems) {
+        Node& n = doc.nodes[id];
+        if (n.kind == Node::Comment || n.style.display == Display::None) return;
+        if (n.kind == Node::Text) { texts.push_back(id); return; }
+        elems.push_back(id);
+        for (int64_t c : n.children) flattenInline(c, texts, elems);
+    }
+
+    double segLineHeight(Node& tn) {
+        if (tn.line_height_px > 0) return tn.line_height_px;
+        cui_text_metrics m = cui_measure_text(ui, fontFor(tn.style), (float)tn.style.font_size, " ", -1);
+        double lh = m.line_height > 0 ? m.line_height : tn.style.font_size * kDefaultLineHeight;
+        tn.line_height_px = lh;
+        return lh;
+    }
+
+    // Lay a run of consecutive inline-level children out as inline content: their
+    // text flows as words across line boxes of avail_inner width and wraps as a
+    // unit. Returns the run height. Words keep their owning text node's style, so
+    // per-segment color/weight follow the closest styled ancestor.
+    double layoutInlineRun(const std::vector<int64_t>& run, double cx, double cy,
+                           double avail_inner) {
+        std::vector<int64_t> texts, elems;
+        for (int64_t id : run) flattenInline(id, texts, elems);
+        for (int64_t tid : texts) { Node& t = doc.nodes[tid]; t.segs.clear(); segLineHeight(t); }
+        if (texts.empty()) return 0;
+
+        struct W { int64_t node; std::string text; double w, lh; bool sp; };
+        std::vector<W> words;
+        for (int64_t tid : texts) {
+            Node& tn = doc.nodes[tid];
+            double lh = tn.line_height_px;
+            std::string cur; bool sp = false; bool any = false;
+            auto flush = [&]() {
+                if (!cur.empty())
+                    words.push_back({tid, cur, textWidth(tn.style, cur), lh, sp});
+                cur.clear();
+            };
+            for (char ch : tn.data) {
+                if (std::isspace((unsigned char)ch)) { if (any) { flush(); sp = true; } }
+                else { cur.push_back(ch); any = true; }
+            }
+            flush();
+        }
+
+        double total = 0, cursor = 0, line_h = 0;
+        for (const W& wd : words) {
+            Node& tn = doc.nodes[wd.node];
+            double sw = wd.sp ? textWidth(tn.style, " ") : 0;
+            if (cursor > 0 && cursor + sw + wd.w > avail_inner + 0.5) {
+                total += line_h; cursor = 0; line_h = 0; sw = 0;
+            }
+            tn.segs.push_back({wd.text, cx + cursor + sw, cy + total, wd.w});
+            cursor += sw + wd.w;
+            line_h = std::max(line_h, wd.lh);
+        }
+        total += line_h;
+
+        // Position each participating node's box from its own segments (for hit
+        // testing and inline-element backgrounds/borders).
+        for (int64_t tid : texts) {
+            Node& t = doc.nodes[tid];
+            double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+            for (const auto& sg : t.segs) {
+                x0 = std::min(x0, sg.x); y0 = std::min(y0, sg.y);
+                x1 = std::max(x1, sg.x + sg.w); y1 = std::max(y1, sg.y + t.line_height_px);
+            }
+            if (x1 >= x0) { t.x = x0; t.y = y0; t.w = x1 - x0; t.h = y1 - y0; }
+        }
+        for (int64_t eid : elems) {
+            std::vector<int64_t> et, ee;
+            flattenInline(eid, et, ee);
+            double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+            for (int64_t tid : et)
+                for (const auto& sg : doc.nodes[tid].segs) {
+                    Node& t = doc.nodes[tid];
+                    x0 = std::min(x0, sg.x); y0 = std::min(y0, sg.y);
+                    x1 = std::max(x1, sg.x + sg.w); y1 = std::max(y1, sg.y + t.line_height_px);
+                }
+            if (x1 >= x0) {
+                Node& e = doc.nodes[eid];
+                e.x = x0; e.y = y0; e.w = x1 - x0; e.h = y1 - y0;
+            }
+        }
+        return total;
     }
 
     double layoutNode(int64_t id, double x, double y, double avail_w,
@@ -732,29 +840,40 @@ struct CuiRenderer::Impl {
             }
             } // end non-wrap flex path
         } else {
-            // Block flow: children stack vertically; block children fill, inline
-            // (text) children wrap.
+            // Block flow: block children stack vertically; runs of consecutive
+            // inline-level children (text, span/em/strong/a/…) flow together on
+            // shared line boxes and wrap as a unit.
             double cy = y + s.pad[0] + s.border;
-            for (int64_t cid : n.children) {
+            size_t ci = 0;
+            while (ci < n.children.size()) {
+                int64_t cid = n.children[ci];
                 Node& c = doc.nodes[cid];
-                if (c.kind == Node::Comment || c.style.display == Display::None) continue;
-                if (c.kind == Node::Text) {
-                    c.w = avail_inner;
-                    wrap(c);
-                    c.x = cx;
-                    c.y = cy;
-                    double th = c.lines.size() * c.line_height_px;
-                    c.h = th;
-                    cy += th;
-                    inner_h += th;
-                } else {
+                if (c.kind == Node::Comment || c.style.display == Display::None) { ci++; continue; }
+                bool c_inline = c.kind == Node::Text || c.style.display == Display::Inline;
+                if (!c_inline) {
                     double child_avail = avail_inner;
                     double used_w = c.style.width >= 0 ? c.style.width : avail_inner;
                     double h = layoutNode(cid, cx, cy, child_avail, -1, definite_content_h);
                     if (c.w < used_w && s.align == Align::Center) shiftX(cid, (used_w - c.w) / 2);
                     cy += h + c.style.margin[0] + c.style.margin[2];
                     inner_h += h + c.style.margin[0] + c.style.margin[2];
+                    ci++;
+                    continue;
                 }
+                // Gather the maximal run of inline-level siblings.
+                std::vector<int64_t> run;
+                while (ci < n.children.size()) {
+                    int64_t rid = n.children[ci];
+                    Node& r = doc.nodes[rid];
+                    if (r.kind == Node::Comment || r.style.display == Display::None) { ci++; continue; }
+                    bool r_inline = r.kind == Node::Text || r.style.display == Display::Inline;
+                    if (!r_inline) break;
+                    run.push_back(rid);
+                    ci++;
+                }
+                double rh = layoutInlineRun(run, cx, cy, avail_inner);
+                cy += rh;
+                inner_h += rh;
             }
         }
 
@@ -792,7 +911,7 @@ struct CuiRenderer::Impl {
 
     void relayout() {
         // Recompute styles, then lay out from the body at the root padding.
-        for (auto& [id, n] : doc.nodes) { (void)id; n.lines.clear(); }
+        for (auto& [id, n] : doc.nodes) { (void)id; n.lines.clear(); n.segs.clear(); }
         int64_t body = 0;
         for (auto& [id, n] : doc.nodes) if (n.tag == "body") { body = id; break; }
         if (!body) return;
@@ -875,7 +994,17 @@ struct CuiRenderer::Impl {
                 cui_draw_rect(ui, r, rad, bg);
             }
         }
-        if (n.kind == Node::Text && !n.lines.empty()) {
+        if (n.kind == Node::Text && !n.segs.empty()) {
+            // Inline flow: draw positioned segments, each at its own (x, y).
+            cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
+                           (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
+                           (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
+            for (const auto& sg : n.segs)
+                if (!sg.text.empty())
+                    cui_draw_text(ui, fontFor(s), (float)s.font_size,
+                                  cui_vec2{ (float)sg.x, (float)sg.y }, col, sg.text.c_str(), -1);
+        }
+        else if (n.kind == Node::Text && !n.lines.empty()) {
             cui_color col{ (uint8_t)std::clamp(s.color.r * 255.f, 0.f, 255.f),
                            (uint8_t)std::clamp(s.color.g * 255.f, 0.f, 255.f),
                            (uint8_t)std::clamp(s.color.b * 255.f, 0.f, 255.f), 255 };
