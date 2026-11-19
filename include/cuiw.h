@@ -157,6 +157,7 @@ typedef enum cuiw_feature {
     CUIW_FEATURE_VERTICAL_ALIGN,
     CUIW_FEATURE_CSS_VARIABLES,
     CUIW_FEATURE_OPACITY_COMPOSITING,
+    CUIW_FEATURE_PSEUDO_CLASSES,   ///< :disabled + :first-child/:last-child/:nth-child
     /// Not yet: the list below is what the engine still lacks.
     CUIW_FEATURE_ABSOLUTE_POSITION,
     CUIW_FEATURE_PERCENT_HEIGHT,
@@ -169,7 +170,6 @@ typedef enum cuiw_feature {
     CUIW_FEATURE_KEYFRAMES,
     CUIW_FEATURE_OVERFLOW_SCROLL,
     CUIW_FEATURE_TEXT_DECORATION,
-    CUIW_FEATURE_PSEUDO_CLASSES,   ///< beyond :disabled
     CUIW_FEATURE_CANVAS,
     CUIW_FEATURE_INLINE_SVG,
     CUIW_FEATURE__COUNT

@@ -290,7 +290,58 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
 }
 
 // A stylesheet rule whose selector is a tag, a ".class" or a "#id" (the profile subset).
-struct Rule { std::string tag, cls, id; Decls decls; bool disabled = false; bool is_root = false; };
+struct Rule {
+    std::string tag, cls, id;
+    Decls decls;
+    bool disabled = false;
+    bool is_root = false;
+    // Structural pseudo-class attached to the simple selector. Only one is tracked
+    // (the profile's flat markup uses at most one per selector).
+    enum Pseudo { None, FirstChild, LastChild, NthChild } pseudo = None;
+    int nth_a = 0, nth_b = 0;   // :nth-child(an+b); a=0 -> the single index b
+};
+
+// Case-insensitive compare of a trimmed pseudo name.
+static bool psEq(const std::string& raw, const char* name) {
+    std::string s;
+    for (char c : raw) if (!std::isspace((unsigned char)c)) s.push_back((char)std::tolower((unsigned char)c));
+    return s == name;
+}
+
+// Parse a structural pseudo-class into rule fields. Returns the pseudo kind and
+// fills a/b for :nth-child(an+b). Recognized: first-child, last-child, nth-child.
+// Unrecognized pseudos (hover, focus, …) return None -> the rule never matches, so
+// an unsupported pseudo degrades to "no style" rather than mis-styling every node.
+static Rule::Pseudo parsePseudo(const std::string& raw, int& a, int& b) {
+    std::string s;
+    for (char c : raw) if (!std::isspace((unsigned char)c)) s.push_back((char)std::tolower((unsigned char)c));
+    if (s == "first-child") return Rule::FirstChild;
+    if (s == "last-child") return Rule::LastChild;
+    if (s.compare(0, 10, "nth-child(") == 0 && s.back() == ')') {
+        std::string arg = s.substr(10, s.size() - 11);
+        // Accept "odd" (2n+1), "even" (2n), and the general an+b / b / an forms.
+        int A = 0, B = 0;
+        if (arg == "odd") { A = 2; B = 1; }
+        else if (arg == "even") { A = 2; B = 0; }
+        else {
+            // Strip spaces, then find the optional 'n' term.
+            std::string t;
+            for (char c : arg) if (c != ' ') t.push_back(c);
+            size_t npos = t.find('n');
+            if (npos == std::string::npos) {
+                B = std::atoi(t.c_str());
+            } else {
+                std::string coef = t.substr(0, npos);
+                A = (coef == "" || coef == "+") ? 1 : (coef == "-" ? -1 : std::atoi(coef.c_str()));
+                std::string rest = t.substr(npos + 1);
+                if (!rest.empty()) B = std::atoi(rest.c_str());   // handles "+1" / "-1"
+            }
+        }
+        a = A; b = B;
+        return Rule::NthChild;
+    }
+    return Rule::None;
+}
 
 void parseSheet(const std::string& css, std::vector<Rule>& out) {
     size_t i = 0;
@@ -320,9 +371,14 @@ void parseSheet(const std::string& css, std::vector<Rule>& out) {
             // :root (optionally with a trailing pseudo) matches the document root.
             bool isRoot = s.compare(0, 5, ":root") == 0;
             size_t colon = s.find(':');
-            bool hasDisabled = colon != std::string::npos && s.compare(colon, 9, ":disabled") == 0;
-            if (colon != std::string::npos) s = s.substr(0, colon);
             Rule r;
+            bool hasDisabled = false;
+            if (colon != std::string::npos) {
+                std::string ps = s.substr(colon + 1);   // e.g. "first-child", "nth-child(2n+1)"
+                s = s.substr(0, colon);
+                hasDisabled = psEq(ps, "disabled");
+                r.pseudo = parsePseudo(ps, r.nth_a, r.nth_b);
+            }
             if (isRoot) r.is_root = true;
             else if (!s.empty() && s[0] == '.') r.cls = s.substr(1);
             else if (!s.empty() && s[0] == '#') r.id = s.substr(1);
@@ -536,6 +592,38 @@ std::string getAttr(const Node& n, const std::string& name) {
     return {};
 }
 
+// Evaluate a structural pseudo-class for node `n` against the Rule's parsed kind.
+// Position is among the parent's *element* children (text/comments don't count),
+// 1-based, matching CSS. A node with no parent never satisfies a positional pseudo.
+bool matchesPseudo(Doc& d, const Node& n, const Rule& r) {
+    if (r.pseudo == Rule::None) return true;
+    if (!n.parent) return false;
+    const Node* p = node(d, n.parent);
+    if (!p) return false;
+    int index = 0, count = 0;
+    for (int64_t cid : p->children) {
+        const Node* c = node(d, cid);
+        if (!c || c->kind != Node::Element) continue;
+        count++;
+        if (cid == n.id) index = count;
+    }
+    if (index == 0) return false;
+    switch (r.pseudo) {
+        case Rule::FirstChild: return index == 1;
+        case Rule::LastChild:  return index == count;
+        case Rule::NthChild: {
+            // Match the smallest k>=0 with index == a*k + b, i.e. (index-b) is a
+            // non-negative multiple of a. a==0 -> only index==b.
+            if (r.nth_a == 0) return index == r.nth_b;
+            int diff = index - r.nth_b;
+            if (diff % r.nth_a != 0) return false;
+            int k = diff / r.nth_a;
+            return k >= 0;
+        }
+        default: return true;
+    }
+}
+
 void computeStyle(Doc& d, int64_t id) {
     Node& n = *node(d, id);
     n.style = Style{};
@@ -580,6 +668,7 @@ void computeStyle(Doc& d, int64_t id) {
                    : ((!r.tag.empty() && r.tag == n.tag) || (!r.cls.empty() && hasClass(n, r.cls))
                    || (!r.id.empty() && getAttr(n, "id") == r.id));
         if (!match) continue;
+        if (!matchesPseudo(d, n, r)) continue;
         if (r.disabled && !n.style.disabled) continue;
         for (const auto& kv : r.decls.kv) all.kv.push_back(kv);
     }
