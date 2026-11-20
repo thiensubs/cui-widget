@@ -50,6 +50,25 @@ this** to render a described widget screen the same way everywhere, styled by CS
 animated without a frame loop, and testable to the pixel. They are different jobs —
 and this one sits on top of CUI's own rasterizer.
 
+### Copy a widget as a picture
+
+Here is the integration, end to end. The **left pane** is the widget's data — the
+RenderOps document as JSON. The **right pane** is that same document *rendered*:
+libcui-widget paints it into an RGBA buffer, which becomes a CUI texture drawn
+right inside the CUI window. **Copy image** writes those pixels out as a PNG —
+the bytes you would hand to the platform clipboard.
+
+CUI's own clipboard is text-only (`set_clipboard` takes a UTF-8 string), so on its
+own CUI cannot copy a widget as a *picture*. libcui-widget is the piece that turns
+a widget into image bytes. That is the integration win: a widget stops being
+something drawn on screen and becomes something you can paste into Slack, a doc or
+a ticket.
+
+Build it with
+`cmake --build build --target cuiw-integration` then
+`./build/cuiw-integration docs/showcase_hero.json widget.png`
+(add `--copy-once` to write the PNG and quit, no window).
+
 ## What it looks like
 
 Here is a **revenue hero** — the clearest picture of what the brain adds over a

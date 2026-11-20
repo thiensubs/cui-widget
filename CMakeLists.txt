@@ -62,8 +62,9 @@ if(APPLE)
     # frameworks. They are also what a GUI host links, so listing them here
     # keeps a console host from having to know.
     target_link_libraries(cui-widget PUBLIC
-        "-framework Cocoa" "-framework OpenGL" "-framework CoreVideo"
-        "-framework IOKit" "-framework Metal" "-framework MetalKit")
+        "-framework Cocoa" "-framework QuartzCore" "-framework OpenGL"
+        "-framework CoreVideo" "-framework IOKit" "-framework Metal"
+        "-framework MetalKit")
 endif()
 
 if(MSVC)
@@ -89,6 +90,15 @@ target_link_libraries(cuiw-probe PRIVATE cui-widget)
 # golden image pixel by pixel, so a layout/paint regression fails the build.
 add_executable(widget-app examples/app/widget_app.c)
 target_link_libraries(widget-app PRIVATE cui-widget)
+
+# cuiw-integration — the CUI + libcui-widget integration demo. A split-pane
+# window: the widget's DATA (RenderOps JSON) on the left, the RENDERED IMAGE on
+# the right (libcui-widget paints the document into an RGBA buffer, which
+# becomes a CUI texture drawn in this window), and a "Copy image" button that
+# writes the PNG bytes. Opens a real window, so it runs on a desktop, not in
+# CI's headless steps. Build: cmake --build build --target cuiw-integration
+add_executable(cuiw-integration examples/integration.c)
+target_link_libraries(cuiw-integration PRIVATE cui-widget)
 
 # pxdiff decodes two PNGs and compares pixels. It needs stb_image to decode
 # (libcui only exposes a PNG writer) and libcui's writer for the diff image.
