@@ -25,13 +25,18 @@ with dashed flow arrows, every shape a 2D vector. Regenerate with
 
 The same diorama, **animated**: a stream of glowing packets flows along each arc,
 driven by a CSS `@keyframes` opacity animation with a staggered `animation-delay`
-per packet (so the bright point sweeps source → deploy). This frame is a real
-render of the animation frozen mid-cycle:
+per packet (so the bright point sweeps source → deploy). Export it as a GIF or
+mp4 — CUI itself only writes PNG (`cui_write_png`), so `tools/flow-gif.sh` renders
+a deterministic frame sequence with `cuiw-render` and encodes it with ffmpeg
+(two-pass palette for an accurate GIF, plus H.264 mp4):
 
-![An isometric pipeline diorama whose packet stream is animated with @keyframes](docs/flow.png)
+![An isometric pipeline diorama whose packet stream is animated with @keyframes](docs/flow.gif)
 
-Regenerate with `python3 tools/flow.py > docs/flow.json && ./build/cuiw-render docs/flow.json docs/flow.png 620 2 dark 420`
-(the last argument freezes the animation clock at t=420ms, mid-flow).
+Regenerate the still with
+`python3 tools/flow.py > docs/flow.json && ./build/cuiw-render docs/flow.json docs/flow.png 620 2 dark 420`,
+or the animation with `./tools/flow-gif.sh` (→ `docs/flow.gif` + `docs/flow.mp4`).
+`cuiw-render` can also emit any animation as a numbered PNG sequence for external
+encoding: `./build/cuiw-render docs/flow.json 'frames/%04d.png' 620 2 dark 0 48 20`.
 
 Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
 `cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget

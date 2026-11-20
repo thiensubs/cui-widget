@@ -14,8 +14,12 @@
  *   width       bubble width in CSS px (default 400)
  *   dpr         device pixel ratio (default 2)
  *   theme       "light" | "dark" (default light)
- *   now_ms      freeze the @keyframes clock at this time (default: t=0). Lets a
- *               frame with animations be captured mid-flight, deterministically.
+ *   now_ms      freeze the @keyframes clock at this time for a single frame
+ *               (default t=0). Ignored when frames > 1.
+ *   frames      >1 writes a PNG sequence to <out.png> as a printf pattern
+ *               (e.g. "frames/%04d.png"), advancing the animation clock one
+ *               frame per step — feed the directory to ffmpeg for GIF/video.
+ *   fps         frame rate of the sequence (default 20).
  */
 #include "cuiw.h"
 
@@ -105,8 +109,12 @@ int main(int argc, char **argv) {
     double dpr = argc > 4 ? atof(argv[4]) : 2.0;
     const char *theme = argc > 5 ? argv[5] : "light";
     double now_ms = argc > 6 ? atof(argv[6]) : -1.0;   /* <0 = leave the clock alone */
+    int frames = argc > 7 ? atoi(argv[7]) : 1;          /* >1 = write a PNG sequence */
+    double fps = argc > 8 ? atof(argv[8]) : 20.0;
     if (width <= 0) width = 400.0;
     if (dpr <= 0) dpr = 2.0;
+    if (frames < 1) frames = 1;
+    if (fps <= 0) fps = 20.0;
 
     printf("libcui-widget %s (CUI %s)\n", cuiw_version(), cuiw_cui_version());
     /* Report the honest capability matrix, then prove the query round-trips. */
@@ -151,15 +159,19 @@ int main(int argc, char **argv) {
     /* Freeze the animation clock BEFORE the ops batch. The ops trigger a
      * relayout that latches each @keyframes start time to the current anim-clock
      * value, so the clock must already be virtual here — otherwise the start is
-     * latched to wall-clock time and the frame is captured stuck in the delay. */
-    if (now_ms >= 0.0) {
-        char clockmsg[64];
-        snprintf(clockmsg, sizeof clockmsg,
-                 "{\"type\":\"clock\",\"virtual\":true,\"now\":%f}", now_ms);
-        if (!cuiw_send(r, clockmsg)) {
-            fprintf(stderr, "cuiw_send rejected the clock message\n");
-            cuiw_destroy(r);
-            return 1;
+     * latched to wall-clock time and the frame is captured stuck in the delay.
+     * A sequence always starts its cycle at t=0 so the frames tile cleanly. */
+    {
+        double t0 = (frames > 1) ? 0.0 : now_ms;
+        if (t0 >= 0.0) {
+            char clockmsg[64];
+            snprintf(clockmsg, sizeof clockmsg,
+                     "{\"type\":\"clock\",\"virtual\":true,\"now\":%f}", t0);
+            if (!cuiw_send(r, clockmsg)) {
+                fprintf(stderr, "cuiw_send rejected the clock message\n");
+                cuiw_destroy(r);
+                return 1;
+            }
         }
     }
 
@@ -171,27 +183,51 @@ int main(int argc, char **argv) {
     }
     free(wrapped);
 
-    /* Paint synchronously (host-driven; the clock is not required here). */
-    cuiw_frame frame = cuiw_paint(r);
-    if (!frame.rgba) {
-        fprintf(stderr, "cuiw_paint produced no frame\n");
-        cuiw_destroy(r);
-        return 1;
-    }
-    printf("painted %u x %u px (stride %u) in %.2f ms\n",
-           frame.width, frame.height, frame.stride, frame.paint_ms);
+    /* Paint each frame. A single frame writes `out_path` verbatim; a sequence
+     * advances the virtual clock by one frame duration per step and writes
+     * `out_path` as a printf pattern (e.g. frames/%04d.png) so ffmpeg can
+     * assemble a GIF/video. The start time stays latched at 0, so advancing
+     * `now` walks the animation deterministically. */
+    double frame_ms = 1000.0 / fps;
+    for (int i = 0; i < frames; i++) {
+        if (frames > 1) {
+            char clockmsg[64];
+            snprintf(clockmsg, sizeof clockmsg,
+                     "{\"type\":\"clock\",\"virtual\":true,\"now\":%f}",
+                     (double)i * frame_ms);
+            if (!cuiw_send(r, clockmsg)) {
+                fprintf(stderr, "cuiw_send rejected the clock message\n");
+                cuiw_destroy(r);
+                return 1;
+            }
+        }
 
-    /* Write the PNG with CUI's own writer (libcui, linked transitively). */
-    if (!cui_write_png(out_path, frame.rgba, (int)frame.width, (int)frame.height,
-                       (int)frame.stride)) {
-        fprintf(stderr, "cui_write_png failed for %s\n", out_path);
-        cuiw_frame_free(&frame);
-        cuiw_destroy(r);
-        return 1;
-    }
-    printf("wrote %s\n", out_path);
+        cuiw_frame f = cuiw_paint(r);
+        if (!f.rgba) {
+            fprintf(stderr, "cuiw_paint produced no frame\n");
+            cuiw_destroy(r);
+            return 1;
+        }
+        if (i == 0)
+            printf("painted %u x %u px (stride %u) in %.2f ms\n",
+                   f.width, f.height, f.stride, f.paint_ms);
 
-    cuiw_frame_free(&frame);
+        char path[1024];
+        if (frames > 1) snprintf(path, sizeof path, out_path, i);
+        else snprintf(path, sizeof path, "%s", out_path);
+
+        if (!cui_write_png(path, f.rgba, (int)f.width, (int)f.height,
+                           (int)f.stride)) {
+            fprintf(stderr, "cui_write_png failed for %s\n", path);
+            cuiw_frame_free(&f);
+            cuiw_destroy(r);
+            return 1;
+        }
+        if (frames > 1) printf("wrote %s\n", path);
+        cuiw_frame_free(&f);
+    }
+    if (frames == 1) printf("wrote %s\n", out_path);
+
     cuiw_destroy(r);
     return 0;
 }
