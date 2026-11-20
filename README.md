@@ -12,6 +12,17 @@ widgets itself, with **no ceiling but the host's own resources**.
 
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
+An everyday use case — a social post with a **post action bar** (like / comment /
+share / save) where every icon is drawn as inline SVG, no icon font, no image
+assets:
+
+![A social post widget whose action-bar icons are inline SVG](docs/diorama.png)
+
+And a pipeline **diorama**: because the engine is a 2D rasterizer, the 3D look is
+computed as isometric polygons — four stages (source → build → test → deploy)
+with dashed flow arrows, every shape a 2D vector. Regenerate with
+`python3 tools/diorama.py > docs/diorama.json && ./build/cuiw-render docs/diorama.json docs/diorama.png 620 2 dark`.
+
 Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
 `cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget
 paint, and draws through libcui's rasterizer.
