@@ -12,31 +12,24 @@ widgets itself, with **no ceiling but the host's own resources**.
 
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
-An everyday use case — a social post with a **post action bar** (like / comment /
-share / save) where every icon is drawn as inline SVG, no icon font, no image
-assets:
-
-![A social post widget whose action-bar icons are inline SVG](docs/diorama.png)
-
-And a pipeline **diorama**: because the engine is a 2D rasterizer, the 3D look is
+A pipeline **diorama**: because the engine is a 2D rasterizer, the 3D look is
 computed as isometric polygons — four stages (source → build → test → deploy)
-with dashed flow arrows, every shape a 2D vector. Regenerate with
-`python3 tools/diorama.py > docs/diorama.json && ./build/cuiw-render docs/diorama.json docs/diorama.png 620 2 dark`.
-
-The same diorama, **animated**: a stream of glowing packets flows along each arc,
-driven by a CSS `@keyframes` opacity animation with a staggered `animation-delay`
-per packet (so the bright point sweeps source → deploy). Export it as a GIF or
-mp4 — CUI itself only writes PNG (`cui_write_png`), so `tools/flow-gif.sh` renders
-a deterministic frame sequence with `cuiw-render` and encodes it with ffmpeg
-(two-pass palette for an accurate GIF, plus H.264 mp4):
+with dashed flow arrows, every shape a 2D vector. The same scene **animated**: a
+stream of glowing packets flows along each arc, driven by a CSS `@keyframes`
+opacity animation with a staggered `animation-delay` per packet, so the bright
+point sweeps source → deploy. CUI itself only writes PNG (`cui_write_png`), so
+export goes one level up — `tools/flow-gif.sh` renders a deterministic frame
+sequence with `cuiw-render` and encodes it with ffmpeg (two-pass palette for an
+accurate GIF, plus H.264 mp4):
 
 ![An isometric pipeline diorama whose packet stream is animated with @keyframes](docs/flow.gif)
 
-Regenerate the still with
-`python3 tools/flow.py > docs/flow.json && ./build/cuiw-render docs/flow.json docs/flow.png 620 2 dark 420`,
-or the animation with `./tools/flow-gif.sh` (→ `docs/flow.gif` + `docs/flow.mp4`).
-`cuiw-render` can also emit any animation as a numbered PNG sequence for external
-encoding: `./build/cuiw-render docs/flow.json 'frames/%04d.png' 620 2 dark 0 48 20`.
+Regenerate: the still diorama with `python3 tools/diorama.py > docs/diorama.json
+&& ./build/cuiw-render docs/diorama.json docs/diorama.png 620 2 dark`; the
+animation with `python3 tools/flow.py > docs/flow.json && ./tools/flow-gif.sh`
+(→ `docs/flow.gif` + `docs/flow.mp4`). `cuiw-render` also emits any animation as
+a numbered PNG sequence for external encoding:
+`./build/cuiw-render docs/flow.json 'frames/%04d.png' 620 2 dark 0 72 30`.
 
 Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
 `cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget
@@ -107,8 +100,7 @@ cuiw_destroy(r);
 - **Threads** — calls on a handle are serialized by an internal mutex. The
   optional frame clock runs on its own thread; copy what you need in the callback.
 - **Capabilities are queryable** — call `cuiw_has_feature` rather than assuming.
-  Unsupported features **degrade gracefully**, never silently mis-render. Full
-  table: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
+  Unsupported features **degrade gracefully**, never silently mis-render.
 
 ## Pixel-regression gate
 
@@ -133,26 +125,16 @@ push. A deliberate change is a **deliberate golden update**: regenerate with
 
 ## Capabilities
 
-A **block + flexbox subset** of CSS — **25 of 27** tracked features: block & flex
-layout (incl. flex-wrap), id/class/tag selectors, border-radius, text-align,
-font-weight, min-height, `vertical-align` (super/sub/middle/length), CSS variables
-(`var()`, custom properties, `:root`), opacity compositing, structural
-pseudo-classes (`:first-child`, `:last-child`, `:nth-child(an+b)`/`odd`/`even` plus
-`:disabled`), media queries (`@media` `min-width`/`max-width` against the
-document width), floats (`float: left`/`right`, inline + block wrap around),
-percent width & height, inline layout, CSS tables (auto column widths,
-`colspan`), `overflow: hidden` clipping, `text-decoration`, `position: absolute`,
-grid (`display: grid`, `grid-template-columns`/`rows`, `gap`; auto-placement),
-transitions (`transition` shorthand + longhands, `linear`/`ease`/`ease-in`/
-`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths), inline
-SVG (an `<svg>` subtree — `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/
-`path`, `fill`/`stroke`, `viewBox` — painted through the rasterizer), CSS
-`@keyframes` animations (the `animation` shorthand, iteration counts, `infinite`,
-stops interpolated per segment), and `<canvas>` 2D-context commands (`fillStyle`/
-`strokeStyle`/`lineWidth`, `fillRect`/`strokeRect`/`clearRect`, path ops +
-`fill`/`stroke`, `fillText`).
+A **block + flexbox subset** of CSS — **27 of 27** tracked features, so nothing
+in the validated profile degrades: block & flex layout (incl. flex-wrap), grid,
+tables, floats, inline layout, percent width & height, `position: absolute`,
+`overflow: hidden` clipping, id/class/tag selectors, structural pseudo-classes,
+media queries, CSS variables, `border-radius`, `text-align`, `font-weight`,
+`vertical-align`, `text-decoration`, opacity compositing, transitions, inline
+SVG, `@keyframes` animations, and `<canvas>` 2D-context commands.
 
-Full table: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
+Full per-feature table, including what each one models and what it does not:
+[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
 > **Honest limitation.** This is a subset engine, not a browser layout engine.
 > Documents leaning on unsupported features lay out differently than in the
