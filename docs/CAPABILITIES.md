@@ -44,14 +44,9 @@ Two rules govern this table:
 | inline-svg | `CUIW_FEATURE_INLINE_SVG` | an `<svg>` subtree paints geometrically through the rasterizer: `<rect>` (incl. `rx`/`ry`), `<circle>`, `<ellipse>`, `<line>`, `<polyline>`, `<polygon>`, and `<path d>` with `M/L/H/V/C/Q/Z` (absolute + relative; curves flattened). `fill`/`stroke`/`stroke-width`/`fill-opacity`/`stroke-opacity` resolve through the CSS cascade and inherit; `viewBox` maps into the element box with `xMidYMid meet`. Not modelled: `<text>` inside SVG (labels use the host's HTML text), gradients, `<transform>`, filters, nested `<svg>`, the arc (`A`) path command |
 | transitions | `CUIW_FEATURE_TRANSITIONS` | `transition` shorthand + the four longhands; timing `linear`/`ease`/`ease-in`/`ease-out`/`ease-in-out` (cubic-bezier); animates opacity, `color`/`background-color`/`border-color`, and px lengths (width/height/min-height/border-radius/border-width/font-size/gap/padding/margin/insets) on a per-frame anim clock. No `cubic-bezier()`/`steps()` author values (fall back to `ease`) |
 | keyframes | `CUIW_FEATURE_KEYFRAMES` | `@keyframes name { from/to/% }` blocks + the `animation` shorthand (name, duration, timing, delay, iteration count, `infinite`) and `animation-name`/`-duration`/`-timing-function`/`-delay`/`-iteration-count` longhands. Interpolates the same property set as transitions (opacity, the three colors, px lengths) between bracketing stops, with the timing function applied per segment. A finite animation freezes at its 100% stop when done; `infinite` loops. Not modelled: `animation-direction`/`-fill-mode`/`-play-state` (parsed out of the shorthand, then ignored), `cubic-bezier()`/`steps()` (fall back to `ease`) |
+| canvas | `CUIW_FEATURE_CANVAS` | a `<canvas>` element replays a recorded batch of 2D-context commands (the `canvas` op) into its box through the same rasterizer as inline SVG, clipped to the element. State: `fillStyle`, `strokeStyle`, `lineWidth`, `globalAlpha`. Shapes: `fillRect`, `strokeRect`, `clearRect` (repaints the element background), path ops `beginPath`/`moveTo`/`lineTo`/`rect`/`arc` (flattened to a polygon)/`closePath`/`fill`/`stroke`, and `fillText`. Unknown command names are skipped, not fatal. Not modelled: gradients/patterns, `drawImage`, `getImageData`, transforms (`translate`/`rotate`/`scale`), `clip()`, composite modes, `strokeText`, text metrics |
 
-**Not yet — 1**
-
-| feature | enum | status |
-| --- | --- | --- |
-| canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
-
-**Totals:** 27 tracked, 26 supported, 1 not yet.
+**Totals:** 27 tracked, 27 supported.
 
 ## How to check a document against this
 

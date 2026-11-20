@@ -908,6 +908,22 @@ void parseSheet(const std::string& css, std::vector<Rule>& out,
 
 // ───────────── document ─────────────
 
+// One <canvas> 2D-context command, recorded by the `canvas` op and replayed at
+// paint. Args are the numeric operands in order; col carries a parsed color for
+// the state-setting commands; text carries fillText's string.
+struct CanvasCmd {
+    enum Kind {
+        FillStyle, StrokeStyle, LineWidth, GlobalAlpha,
+        FillRect, ClearRect, StrokeRect,
+        BeginPath, MoveTo, LineTo, Rect, Arc, ClosePath, Fill, Stroke,
+        FillText
+    };
+    Kind kind;
+    double a[6] = {0, 0, 0, 0, 0, 0};
+    cuiw_svg::Rgba col{0, 0, 0, 1};
+    std::string text;
+};
+
 struct Node {
     int64_t id = 0;
     enum Kind { Element, Text, Comment } kind = Element;
@@ -929,6 +945,9 @@ struct Node {
     // boxes; paintNode draws segments when non-empty.
     struct Seg { std::string text; double x, y, w; };
     std::vector<Seg> segs;
+    // <canvas> 2D-context command list (the `canvas` op). Recorded verbatim and
+    // replayed at paint into the element box; see paintCanvas. Empty = no drawing.
+    std::vector<CanvasCmd> canvas_cmds;
 };
 
 struct Doc {
@@ -1064,6 +1083,13 @@ void applyUaDefaults(Doc& d, Node& n) {
         s.bold = true; s.font_weight = 500;
     }
     else if (t == "br") { s.display = Display::Block; s.height = 0; }
+    // <canvas> replaced-element default: 300x150 (HTML 4.12.5) and a block box,
+    // so the element has a real box to paint its 2D-context commands into even
+    // with no width/height attrs or CSS.
+    else if (t == "canvas") {
+        s.width = 300; s.height = 150;
+        s.display = Display::Block;
+    }
     // SVG paint defaults (SVG 1.1 initial values). Shape elements fill black and
     // stroke none; the <svg> root paints no fill/stroke of its own (it is a
     // viewport). CSS/presentation attrs override these in the cascade.
@@ -2580,6 +2606,146 @@ struct CuiRenderer::Impl {
         return cuiw_svg::Rgba{c.r, c.g, c.b, c.a * std::clamp(a, 0.f, 1.f)};
     }
 
+    // Paints a <canvas> element: replays its recorded 2D-context commands into
+    // the element box. Canvas coords are CSS px relative to the element's top-
+    // left, so they map straight onto the box origin (n.x, n.y) — the same
+    // rasterizer inline SVG uses draws the fills/strokes, clipped to the box.
+    void paintCanvas(int64_t id) {
+        Node& n = doc.nodes[id];
+        if (n.canvas_cmds.empty() || n.w <= 0 || n.h <= 0) return;
+        const double ox = n.x, oy = n.y;
+        cui_rect clip{(float)n.x, (float)n.y, (float)n.w, (float)n.h};
+        cui_push_clip(ui, clip);
+
+        // Canvas state. Defaults per the 2D-context spec: black fill/stroke,
+        // 1 px line, alpha 1.
+        Rgba fill_col{0, 0, 0, 1}, stroke_col{0, 0, 0, 1};
+        double line_w = 1.0, galpha = 1.0;
+        // The current path: a list of subpaths, each a point list. Canvas builds
+        // one path across many commands, then fill()/stroke() paint it all.
+        std::vector<std::vector<cuiw_svg::Pt>> subpaths;
+        bool cur_closed = false;
+        auto new_subpath = [&]() {
+            subpaths.emplace_back();
+            cur_closed = false;
+        };
+        new_subpath();
+
+        auto paint_poly = [&](const std::vector<cuiw_svg::Pt>& pts, bool closed,
+                              bool do_fill, bool do_stroke) {
+            if (pts.empty()) return;
+            if (do_fill) {
+                cuiw_svg::Path p;
+                p.pts = pts; p.closed = true;
+                p.stroke = {0, 0, 0, 0};
+                p.fill = scaleRgba(fill_col, (float)galpha);
+                cuiw_svg::paintPaths(ui, {p}, cuiw_svg::Xform{1, ox, oy}, clip);
+            }
+            if (do_stroke && line_w > 0) {
+                cuiw_svg::Path p;
+                p.pts = pts; p.closed = closed;
+                p.fill = {0, 0, 0, 0};
+                p.stroke = scaleRgba(stroke_col, (float)galpha);
+                p.stroke_width = line_w;
+                cuiw_svg::paintPaths(ui, {p}, cuiw_svg::Xform{1, ox, oy}, clip);
+            }
+        };
+
+        for (const CanvasCmd& c : n.canvas_cmds) {
+            switch (c.kind) {
+                case CanvasCmd::FillStyle: fill_col = {c.col.r, c.col.g, c.col.b, c.col.a}; break;
+                case CanvasCmd::StrokeStyle: stroke_col = {c.col.r, c.col.g, c.col.b, c.col.a}; break;
+                case CanvasCmd::LineWidth: line_w = c.a[0]; break;
+                case CanvasCmd::GlobalAlpha: galpha = std::clamp(c.a[0], 0.0, 1.0); break;
+                case CanvasCmd::FillRect: {
+                    std::vector<cuiw_svg::Pt> r;
+                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    paint_poly(r, true, true, false);
+                    break;
+                }
+                case CanvasCmd::ClearRect: {
+                    // Clear = paint the element's own background over the rect
+                    // (the canvas box is opaque in this renderer, so "erase" is
+                    // "repaint the backdrop"), honouring the CSS background.
+                    Rgba bg = n.style.bg;
+                    if (bg.a <= 0) break;
+                    std::vector<cuiw_svg::Pt> r;
+                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    cuiw_svg::Path p;
+                    p.pts = r; p.closed = true; p.stroke = {0, 0, 0, 0};
+                    p.fill = scaleRgba(bg, (float)galpha);
+                    cuiw_svg::paintPaths(ui, {p}, cuiw_svg::Xform{1, ox, oy}, clip);
+                    break;
+                }
+                case CanvasCmd::StrokeRect: {
+                    std::vector<cuiw_svg::Pt> r;
+                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    paint_poly(r, true, false, true);
+                    break;
+                }
+                case CanvasCmd::BeginPath:
+                    subpaths.clear();
+                    new_subpath();
+                    break;
+                case CanvasCmd::MoveTo:
+                    // A moveTo after drawing starts a new, unconnected subpath.
+                    if (!subpaths.back().empty()) new_subpath();
+                    subpaths.back().push_back({c.a[0], c.a[1]});
+                    break;
+                case CanvasCmd::LineTo:
+                    subpaths.back().push_back({c.a[0], c.a[1]});
+                    break;
+                case CanvasCmd::Rect: {
+                    // rect() adds a closed rectangular subpath.
+                    if (!subpaths.back().empty()) new_subpath();
+                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, subpaths.back());
+                    cur_closed = true;
+                    new_subpath();
+                    break;
+                }
+                case CanvasCmd::Arc: {
+                    // Flatten the arc sweep into points (canvas angles are in
+                    // radians, y-down so increasing angle sweeps clockwise).
+                    double cx = c.a[0], cy = c.a[1], rad = c.a[2];
+                    double a0 = c.a[3], a1 = c.a[4];
+                    if (rad <= 0) break;
+                    double sweep = a1 - a0;
+                    while (sweep < 0) sweep += 2 * 3.14159265358979;
+                    if (sweep > 2 * 3.14159265358979) sweep = 2 * 3.14159265358979;
+                    int steps = std::max(8, (int)std::ceil(sweep / 0.2));
+                    bool full = sweep >= 2 * 3.14159265358979 - 1e-6;
+                    if (!subpaths.back().empty()) new_subpath();
+                    for (int i = 0; i <= steps; i++) {
+                        double a = a0 + sweep * (double)i / (double)steps;
+                        subpaths.back().push_back({cx + rad * std::cos(a), cy + rad * std::sin(a)});
+                    }
+                    cur_closed = full;
+                    if (full) new_subpath();   // a full circle is its own subpath
+                    break;
+                }
+                case CanvasCmd::ClosePath:
+                    if (!subpaths.back().empty()) subpaths.back().push_back(subpaths.back().front());
+                    cur_closed = true;
+                    break;
+                case CanvasCmd::Fill:
+                    for (auto& sp : subpaths) paint_poly(sp, true, true, false);
+                    break;
+                case CanvasCmd::Stroke:
+                    for (auto& sp : subpaths) paint_poly(sp, cur_closed, false, true);
+                    break;
+                case CanvasCmd::FillText:
+                    if (!c.text.empty()) {
+                        cui_color col = paintColor(fill_col, (float)galpha);
+                        cui_draw_text(ui, fontFor(n.style), (float)n.style.font_size,
+                                      cui_vec2{ (float)(ox + c.a[0]), (float)(oy + c.a[1]) },
+                                      col, c.text.c_str(), -1);
+                    }
+                    break;
+            }
+        }
+        cui_pop_clip(ui);
+    }
+
     void paintNode(int64_t id) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) return;
@@ -2588,6 +2754,9 @@ struct CuiRenderer::Impl {
         // fall through to the block/inline recursion (shape children carry
         // display:none and are placed by the viewBox, not by layout).
         if (n.tag == "svg") { paintSvg(id); return; }
+        // A <canvas> paints its recorded 2D-context commands into its box and
+        // has no HTML children, so it does not fall through to the recursion.
+        if (n.tag == "canvas") { paintCanvas(id); return; }
         Style& s = n.style;
         // Draw in CSS logical points — cui_set_viewport(scale) scales them to
         // device px internally, so pre-multiplying here double-scales (the card
@@ -2673,6 +2842,62 @@ struct CuiRenderer::Impl {
 
     // ───────────── ops ─────────────
 
+    // Parses one canvas 2D-context command: ["fillRect", x, y, w, h]. Returns
+    // false for a name the engine does not model (the caller skips it).
+    static bool parseCanvasCmd(const Json& c, CanvasCmd& cc) {
+        const std::string name = c[0].asString();
+        auto num = [&](int i) { return c.size() > (size_t)i ? c[i].asNumber() : 0.0; };
+        auto str = [&](int i) { return c.size() > (size_t)i ? c[i].asString() : std::string(); };
+        Rgba col;
+        if (name == "fillStyle" || name == "strokeStyle") {
+            cc.kind = name == "fillStyle" ? CanvasCmd::FillStyle : CanvasCmd::StrokeStyle;
+            if (!parseColor(str(1), col)) return false;
+            cc.col = {col.r, col.g, col.b, col.a};
+            return true;
+        }
+        if (name == "lineWidth") { cc.kind = CanvasCmd::LineWidth; cc.a[0] = num(1); return true; }
+        if (name == "globalAlpha") { cc.kind = CanvasCmd::GlobalAlpha; cc.a[0] = num(1); return true; }
+        if (name == "fillRect") {
+            cc.kind = CanvasCmd::FillRect;
+            cc.a[0] = num(1); cc.a[1] = num(2); cc.a[2] = num(3); cc.a[3] = num(4);
+            return true;
+        }
+        if (name == "clearRect") {
+            cc.kind = CanvasCmd::ClearRect;
+            cc.a[0] = num(1); cc.a[1] = num(2); cc.a[2] = num(3); cc.a[3] = num(4);
+            return true;
+        }
+        if (name == "strokeRect") {
+            cc.kind = CanvasCmd::StrokeRect;
+            cc.a[0] = num(1); cc.a[1] = num(2); cc.a[2] = num(3); cc.a[3] = num(4);
+            return true;
+        }
+        if (name == "beginPath") { cc.kind = CanvasCmd::BeginPath; return true; }
+        if (name == "moveTo") { cc.kind = CanvasCmd::MoveTo; cc.a[0] = num(1); cc.a[1] = num(2); return true; }
+        if (name == "lineTo") { cc.kind = CanvasCmd::LineTo; cc.a[0] = num(1); cc.a[1] = num(2); return true; }
+        if (name == "rect") {
+            cc.kind = CanvasCmd::Rect;
+            cc.a[0] = num(1); cc.a[1] = num(2); cc.a[2] = num(3); cc.a[3] = num(4);
+            return true;
+        }
+        // arc(x, y, r, start, end): a full circle when the sweep is >= 2*pi.
+        if (name == "arc") {
+            cc.kind = CanvasCmd::Arc;
+            cc.a[0] = num(1); cc.a[1] = num(2); cc.a[2] = num(3);
+            cc.a[3] = num(4); cc.a[4] = num(5);
+            return true;
+        }
+        if (name == "closePath") { cc.kind = CanvasCmd::ClosePath; return true; }
+        if (name == "fill") { cc.kind = CanvasCmd::Fill; return true; }
+        if (name == "stroke") { cc.kind = CanvasCmd::Stroke; return true; }
+        if (name == "fillText") {
+            cc.kind = CanvasCmd::FillText;
+            cc.text = str(1); cc.a[0] = num(2); cc.a[1] = num(3);
+            return true;
+        }
+        return false;
+    }
+
     void applyOps(const Json& ops) {
         for (const Json& op : ops.arr()) applyOp(op);
     }
@@ -2741,7 +2966,21 @@ struct CuiRenderer::Impl {
             }
         } else if (k == "prop") { /* scrollTop/scrollLeft: no scrolling yet */ }
         else if (k == "call") { /* scrollTo/setPointerCapture: no-ops here */ }
-        else if (k == "canvas") { /* canvas 2D commands: not yet painted */ }
+        else if (k == "canvas") {
+            // Record a batch of 2D-context commands against the canvas element.
+            // Each command is [name, ...args]; unknown names are skipped so a
+            // command the engine does not model degrades to "not drawn" rather
+            // than corrupting the batch.
+            if (Node* n = node(doc, id)) {
+                const Json& cmds = op["cmds"];
+                if (cmds.isArray()) for (const Json& c : cmds.arr()) {
+                    if (!c.isArray() || c.size() < 1) continue;
+                    CanvasCmd cc;
+                    if (!parseCanvasCmd(c, cc)) continue;
+                    n->canvas_cmds.push_back(std::move(cc));
+                }
+            }
+        }
     }
 
     std::map<int64_t, std::string> pending_adopt_;

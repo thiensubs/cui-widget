@@ -14,11 +14,11 @@
 //   supported     display:block|flex, flex-direction, justify-content,
 //                 align-items, gap, padding, margin, width/height/min-height,
 //                 background-color, color, border (+radius), font-size,
-//                 font-weight, text-align, border-radius, the UA defaults.
-//   not yet       CSS custom properties, @media, transitions/animations,
-//                 pseudo-classes beyond :disabled, tables, floats, grid,
-//                 inline SVG, <canvas> 2D commands, position, overflow
-//                 scrolling, text-decoration, opacity compositing.
+//                 font-weight, text-align, border-radius, CSS custom properties,
+//                 @media, pseudo-classes, tables, floats, grid, inline SVG,
+//                 <canvas> 2D commands, transitions/animations (@keyframes),
+//                 position, overflow scrolling, text-decoration, opacity.
+//   not yet       (see docs/CAPABILITIES.md for the full per-feature table).
 //
 // Threading: the document is not locked on any side, so every public call
 // goes through one mutex here; the host thread (messages), the clock thread

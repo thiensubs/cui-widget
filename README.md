@@ -129,11 +129,14 @@ percent width & height, inline layout, CSS tables (auto column widths,
 `colspan`), `overflow: hidden` clipping, `text-decoration`, `position: absolute`,
 grid (`display: grid`, `grid-template-columns`/`rows`, `gap`; auto-placement),
 transitions (`transition` shorthand + longhands, `linear`/`ease`/`ease-in`/
-`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths), and inline
+`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths), inline
 SVG (an `<svg>` subtree — `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/
-`path`, `fill`/`stroke`, `viewBox` — painted through the rasterizer).
+`path`, `fill`/`stroke`, `viewBox` — painted through the rasterizer), CSS
+`@keyframes` animations (the `animation` shorthand, iteration counts, `infinite`,
+stops interpolated per segment), and `<canvas>` 2D-context commands (`fillStyle`/
+`strokeStyle`/`lineWidth`, `fillRect`/`strokeRect`/`clearRect`, path ops +
+`fill`/`stroke`, `fillText`).
 
-Not yet: keyframes, canvas.
 Full table: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
 > **Honest limitation.** This is a subset engine, not a browser layout engine.

@@ -193,6 +193,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_ABSOLUTE_POSITION:
         case CUIW_FEATURE_INLINE_SVG:
         case CUIW_FEATURE_KEYFRAMES:
+        case CUIW_FEATURE_CANVAS:
             return true;
         default:
             return false;

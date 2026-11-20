@@ -99,5 +99,7 @@ add_executable(cuiw-transitions tests/transitions.c)
 target_link_libraries(cuiw-transitions PRIVATE cui-widget)
 add_executable(cuiw-keyframes tests/keyframes.c)
 target_link_libraries(cuiw-keyframes PRIVATE cui-widget)
+add_executable(cuiw-canvas tests/canvas.c)
+target_link_libraries(cuiw-canvas PRIVATE cui-widget)
 
 message(STATUS "cui-widget: CUI_ROOT=${CUI_ROOT}")
