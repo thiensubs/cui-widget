@@ -609,7 +609,20 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     else if (is("width")) { double x; bool p; if (parseLenPx(value, x, p)) { st.width = x; st.width_pct = p ? x : -1; } }
     else if (is("height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.height = x; st.height_pct = p ? x : -1; } }
     else if (is("min-height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.min_height = x; st.min_height_pct = p ? x : -1; } }
-    else if (is("background") || is("background-color")) { Rgba c; if (parseColor(value, c)) st.bg = c; }
+    else if (is("background") || is("background-color") || is("background-image")) {
+        // A linear-gradient paints over a flat color (CSS: background-image over
+        // background-color). The `background` shorthand can carry either, so try
+        // the gradient first and fall back to a flat color.
+        Rgba top, bottom;
+        if (parseLinearGradient(value, top, bottom)) {
+            st.has_gradient = true; st.grad_top = top; st.grad_bottom = bottom;
+            st.bg = {0, 0, 0, 0};
+        }
+        else if (!is("background-image")) {
+            Rgba c;
+            if (parseColor(value, c)) st.bg = c;
+        }
+    }
     else if (is("background-image")) {
         // Only linear-gradient is modelled; other image types (url(), radial-)
         // don't parse and leave the background unchanged.

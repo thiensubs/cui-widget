@@ -25,6 +25,18 @@ You can save that moving scene as a GIF or a video to share. The drawing library
 itself only saves still pictures (PNG), so a small script (`tools/flow-gif.sh`)
 takes a bunch of still frames and stitches them into a GIF and a video for you.
 
+Here is a **real app screen** — a music player. This one screen uses a lot of
+the toolbox at once: a card with a **gradient** background and a soft **shadow**,
+an **album cover** (a picture drawn from data embedded right in the widget), a
+**progress bar** with a gradient fill, play / skip buttons, and a **playlist
+that scrolls** when there are more songs than fit. It is the kind of screen a
+real music app would show:
+
+![A music-player card with album art, a gradient background, a progress bar, and a scrolling playlist](docs/showcase_app.png)
+
+Build it with `python3 tools/showcase_app.py > docs/showcase_app.json &&
+./build/cuiw-render docs/showcase_app.json docs/showcase_app.png 380 2 dark`.
+
 ## No hidden roommates
 
 This toolbox **only needs CUI and the normal C/C++ tools**. There is no hidden
