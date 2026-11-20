@@ -1167,6 +1167,7 @@ struct CanvasCmd {
     Kind kind;
     double a[6] = {0, 0, 0, 0, 0, 0};
     cuiw_svg::Rgba col{0, 0, 0, 1};
+    Gradient grad;            // fillStyle/strokeStyle as a gradient (has=true)
     std::string text;
 };
 
@@ -1211,6 +1212,11 @@ struct Node {
     // a reduced resolution (gradients are smooth) and scaled to the box.
     cui_texture grad_tex = 0;
     bool grad_tex_valid = false;
+    // Canvas fillStyle-gradient texture, cached the same way (the rasterizer
+    // samples the texture after cui_draw_image returns, so a create-and-destroy
+    // within one paint draws nothing). Keyed by the gradient + box size.
+    cui_texture canvas_grad_tex = 0;
+    std::string canvas_grad_key;
 };
 
 struct Doc {
@@ -2947,6 +2953,9 @@ struct CuiRenderer::Impl {
         // Canvas state. Defaults per the 2D-context spec: black fill/stroke,
         // 1 px line, alpha 1.
         Rgba fill_col{0, 0, 0, 1}, stroke_col{0, 0, 0, 1};
+        // A fillStyle/strokeStyle can be a gradient string; rect fills paint it as
+        // a texture, other shapes fall back to the first stop's colour (fill_col).
+        Gradient fill_grad, stroke_grad;
         double line_w = 1.0, galpha = 1.0;
         // The current path: a list of subpaths, each a point list. Canvas builds
         // one path across many commands, then fill()/stroke() paint it all.
@@ -2998,14 +3007,52 @@ struct CuiRenderer::Impl {
 
         for (const CanvasCmd& c : n.canvas_cmds) {
             switch (c.kind) {
-                case CanvasCmd::FillStyle: fill_col = {c.col.r, c.col.g, c.col.b, c.col.a}; break;
-                case CanvasCmd::StrokeStyle: stroke_col = {c.col.r, c.col.g, c.col.b, c.col.a}; break;
+                case CanvasCmd::FillStyle:
+                    fill_col = {c.col.r, c.col.g, c.col.b, c.col.a};
+                    fill_grad = c.grad;
+                    break;
+                case CanvasCmd::StrokeStyle:
+                    stroke_col = {c.col.r, c.col.g, c.col.b, c.col.a};
+                    stroke_grad = c.grad;
+                    break;
                 case CanvasCmd::LineWidth: line_w = c.a[0]; break;
                 case CanvasCmd::GlobalAlpha: galpha = std::clamp(c.a[0], 0.0, 1.0); break;
                 case CanvasCmd::FillRect: {
                     std::vector<cuiw_svg::Pt> r;
                     appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
                     for (auto& p : r) p = xformPt(p.x, p.y);
+                    if (fill_grad.has) {
+                        // A gradient fill paints a texture across the rect's box
+                        // (rects are the one shape that maps cleanly onto a
+                        // texture; paths fall back to the average colour below).
+                        double x0 = r[0].x, y0 = r[0].y, x1 = r[0].x, y1 = r[0].y;
+                        for (const auto& p : r) {
+                            x0 = std::min(x0, p.x); y0 = std::min(y0, p.y);
+                            x1 = std::max(x1, p.x); y1 = std::max(y1, p.y);
+                        }
+                        // The rasterizer samples the texture AFTER cui_draw_image
+                        // returns, so it must outlive this call — cache it on the
+                        // node, keyed by gradient + box size (a CSS-style gradient
+                        // can't be handed to a path, which the rasterizer tints
+                        // one flat colour).
+                        std::string key = fill_grad_key(fill_grad, x1 - x0, y1 - y0);
+                        if (n.canvas_grad_key != key) {
+                            if (n.canvas_grad_tex && ui)
+                                cui_image_destroy(ui, n.canvas_grad_tex);
+                            n.canvas_grad_tex = canvasGradTex(fill_grad, x1 - x0, y1 - y0);
+                            n.canvas_grad_key = n.canvas_grad_tex ? key : "";
+                        }
+                        if (n.canvas_grad_tex) {
+                            cui_rect dst{(float)(ox + x0), (float)(oy + y0),
+                                         (float)(x1 - x0), (float)(y1 - y0)};
+                            // Tint transparent = draw the texture's own colours
+                            // (a white tint would wash the gradient out).
+                            cui_draw_image(ui, n.canvas_grad_tex, dst,
+                                           cui_rect{0, 0, 1, 1},
+                                           CUI_CORNERS(0), CUI_TRANSPARENT);
+                        }
+                        break;
+                    }
                     paint_poly(r, true, true, false);
                     break;
                 }
@@ -3298,6 +3345,74 @@ struct CuiRenderer::Impl {
                        CUI_CORNERS((float)n.style.radius), CUI_TRANSPARENT);
     }
 
+    // Builds (and uploads) a gradient texture sized to a w x h box, for canvas
+    // fillRect/strokeRect fills whose fillStyle is a gradient string. Mirrors the
+    // sampling in paintGradient; small enough to regenerate per call (gradients
+    // are smooth, so a modest texture upscaled looks identical). Returns 0 on a
+    // degenerate box. The caller owns the texture (not cached).
+    cui_texture canvasGradTex(const Gradient& g, double w, double h) {
+        if (w <= 0 || h <= 0 || !g.has || g.stops.empty()) return 0;
+        const int kMax = 128;
+        double s = std::min(kMax / std::max(1.0, w), kMax / std::max(1.0, h));
+        int tw = std::max(1, (int)std::lround(w * s));
+        int th = std::max(1, (int)std::lround(h * s));
+        std::vector<uint8_t> px((size_t)tw * th * 4);
+
+        double a = g.angle * 3.14159265358979 / 180.0;
+        double dx = std::sin(a), dy = -std::cos(a);
+        double cx = w / 2.0, cy = h / 2.0;
+        double radius = std::hypot(std::max(cx, w - cx), std::max(cy, h - cy));
+        double pmin = 0, pmax = 0;
+        if (!g.radial) {
+            const double corners[4][2] = {{0, 0}, {w, 0}, {0, h}, {w, h}};
+            for (int i = 0; i < 4; i++) {
+                double pr = (corners[i][0] - cx) * dx + (corners[i][1] - cy) * dy;
+                pmin = std::min(pmin, pr); pmax = std::max(pmax, pr);
+            }
+        }
+        double prange = (pmax - pmin) > 0 ? (pmax - pmin) : 1.0;
+        double tile = g.stops.back().first;
+        if (tile <= 0) tile = 1.0;
+
+        for (int py = 0; py < th; py++) {
+            for (int pxi = 0; pxi < tw; pxi++) {
+                double ux = (pxi + 0.5) / tw * w;
+                double uy = (py + 0.5) / th * h;
+                double t;
+                if (g.radial) t = std::hypot(ux - cx, uy - cy) / radius;
+                else t = ((ux - cx) * dx + (uy - cy) * dy - pmin) / prange;
+                if (g.repeating) t = t - std::floor(t / tile) * tile;
+                Rgba c = sampleGradStops(g.stops, t);
+                uint8_t* p = px.data() + ((size_t)py * tw + pxi) * 4;
+                p[0] = (uint8_t)std::clamp(c.r * 255.f, 0.f, 255.f);
+                p[1] = (uint8_t)std::clamp(c.g * 255.f, 0.f, 255.f);
+                p[2] = (uint8_t)std::clamp(c.b * 255.f, 0.f, 255.f);
+                p[3] = (uint8_t)std::clamp(c.a * 255.f, 0.f, 255.f);
+            }
+        }
+        return cui_image_create(ui, tw, th, px.data());
+    }
+
+    // Identity of a canvas gradient fill for the per-node texture cache: the
+    // descriptor plus the box it is sampled into (the texture bakes the size).
+    static std::string fill_grad_key(const Gradient& g, double w, double h) {
+        char buf[64];
+        std::string k = g.radial ? "r" : "l";
+        k += g.repeating ? "p" : " ";
+        k += std::to_string(g.angle);
+        for (const auto& s : g.stops) {
+            snprintf(buf, sizeof buf, "|%.3f,%02x%02x%02x%02x", s.first,
+                     (int)std::clamp(s.second.r * 255.f, 0.f, 255.f),
+                     (int)std::clamp(s.second.g * 255.f, 0.f, 255.f),
+                     (int)std::clamp(s.second.b * 255.f, 0.f, 255.f),
+                     (int)std::clamp(s.second.a * 255.f, 0.f, 255.f));
+            k += buf;
+        }
+        snprintf(buf, sizeof buf, "|%gx%g", w, h);
+        k += buf;
+        return k;
+    }
+
     // `content_dy` is the accumulated vertical offset from ancestor scroll
     // containers (0 for a non-scrolled document, so non-scrolling docs are
     // byte-identical to before). The box's own frame (background, border,
@@ -3446,8 +3561,15 @@ struct CuiRenderer::Impl {
         Rgba col;
         if (name == "fillStyle" || name == "strokeStyle") {
             cc.kind = name == "fillStyle" ? CanvasCmd::FillStyle : CanvasCmd::StrokeStyle;
-            if (!parseColor(str(1), col)) return false;
-            cc.col = {col.r, col.g, col.b, col.a};
+            // A gradient string paints the fill from a sampled texture (rect
+            // fills) or its average stop colour (paths, which the rasterizer
+            // can only tint one flat colour). A plain colour parses as before.
+            if (parseGradient(str(1), cc.grad)) {
+                cc.col = {cc.grad.stops.front().second.r, cc.grad.stops.front().second.g,
+                          cc.grad.stops.front().second.b, cc.grad.stops.front().second.a};
+            } else if (parseColor(str(1), col)) {
+                cc.col = {col.r, col.g, col.b, col.a};
+            } else return false;
             return true;
         }
         if (name == "lineWidth") { cc.kind = CanvasCmd::LineWidth; cc.a[0] = num(1); return true; }

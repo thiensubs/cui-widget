@@ -111,7 +111,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for t in canvas canvas-xform keyframes gradients images svgtext scroll; do
+          for t in canvas canvas-xform canvas-grad keyframes gradients images svgtext scroll; do
             if [ -f "build/cuiw-$t" ]; then B="build/cuiw-$t"; else B="build/cuiw-$t.exe"; fi
             echo "== $t =="
             "$B"
