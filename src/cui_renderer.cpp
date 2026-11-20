@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -223,6 +224,15 @@ struct Style {
         Ease ease = Ease::Ease;      // CSS default timing function
     };
     std::vector<TransitionSpec> transitions;
+    // CSS @keyframes animation (profile subset). `animation-name` references a
+    // named block in Doc::keyframes; duration/delay in ms, iteration count, and
+    // timing function mirror the transitions fields. An empty name means the
+    // node is not animated, so a static document never runs the driver.
+    std::string anim_name;
+    double anim_duration_ms = 0;
+    double anim_delay_ms = 0;
+    double anim_iter = 1;            // iteration count; < 0 = infinite
+    Ease anim_ease = Ease::Ease;
     // SVG paint (inline-svg feature). fill/stroke are inherited; alpha 0 means
     // "none" (SVG's default stroke; shapes get a black fill via UA defaults).
     // The two opacities stay separate from the colors so a child inherits the
@@ -582,6 +592,62 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
             else if (is("transition-delay")) { double ms; if (parseTimeMs(toks[i], ms)) st.transitions[i].delay_ms = ms; }
             else st.transitions[i].ease = parseEase(toks[i]);
         }
+    } else if (is("animation-name")) {
+        // One named @keyframes animation (a comma list keeps the first). "none"
+        // clears it. whitespace-stripped + lowercased so it matches the map key.
+        std::string n;
+        for (char c : value) if (!std::isspace((unsigned char)c)) n.push_back((char)std::tolower((unsigned char)c));
+        size_t comma = n.find(',');
+        if (comma != std::string::npos) n = n.substr(0, comma);
+        st.anim_name = (n == "none") ? "" : n;
+    } else if (is("animation-duration") || is("animation-delay")) {
+        double ms;
+        if (parseTimeMs(value, ms)) {
+            if (is("animation-duration")) st.anim_duration_ms = ms;
+            else st.anim_delay_ms = ms;
+        }
+    } else if (is("animation-timing-function")) {
+        st.anim_ease = parseEase(value);
+    } else if (is("animation-iteration-count")) {
+        std::string v;
+        for (char c : value) if (!std::isspace((unsigned char)c)) v.push_back((char)std::tolower((unsigned char)c));
+        if (v.find("infinite") != std::string::npos) st.anim_iter = -1;
+        else st.anim_iter = std::atof(v.c_str());
+    } else if (is("animation")) {
+        // Shorthand subset: "name duration [timing] [delay] [count]". Order-flexible
+        // like CSS; the first time token is duration, the second is delay.
+        std::string cur; std::vector<std::string> toks;
+        auto cm = [&] { if (!cur.empty()) toks.push_back(cur); cur.clear(); };
+        for (char c : value) { if (std::isspace((unsigned char)c)) cm(); else cur.push_back(c); }
+        cm();
+        int times = 0;
+        for (const std::string& t : toks) {
+            std::string low;
+            for (char c : t) low.push_back((char)std::tolower((unsigned char)c));
+            double ms;
+            if (low.find("infinite") != std::string::npos) { st.anim_iter = -1; continue; }
+            // A bare number is the iteration count, not a time: CSS times carry a
+            // unit (100ms / 1s). Check it before parseTimeMs, which would otherwise
+            // read "1" as a 1 ms delay and stall the animation behind `t < 0`.
+            if (!low.empty() && low.find_first_not_of("0123456789.") == std::string::npos) {
+                st.anim_iter = std::atof(low.c_str()); continue;
+            }
+            if (parseTimeMs(t, ms)) {
+                if (times == 0) st.anim_duration_ms = ms;
+                else if (times == 1) st.anim_delay_ms = ms;
+                times++;
+                continue;
+            }
+            if (parseEase(low) != Ease::Ease || low.find("linear") != std::string::npos) {
+                st.anim_ease = parseEase(low); continue;
+            }
+            // fill-mode / direction / play-state keywords belong to the shorthand
+            // but the driver models none of them yet; skip rather than misread as name.
+            if (low == "both" || low == "forwards" || low == "backwards" ||
+                low == "alternate" || low == "reverse" || low == "normal" ||
+                low == "running" || low == "paused") continue;
+            if (low != "none") st.anim_name = low;
+        }
     } else if (is("top") || is("right") || is("bottom") || is("left")) {
         double x; if (parseLenPx(value, x)) {
             if (is("top")) st.top = x;
@@ -701,7 +767,22 @@ bool parseMediaWidth(const std::string& cond, double& mn, double& mx) {
     return sawAny && allKnown;
 }
 
+// One named @keyframes animation: an ordered list of stops, each an offset in
+// 0..1 (from=0, to=1, "50%"=0.5) plus the declarations to apply at that point.
+// The driver interpolates each animatable property between the two stops that
+// bracket the current clock position, reusing the transition engine's AnimVal
+// lerp so keyframes and transitions share one value model.
+struct KeyframeStop {
+    double offset = 0;                 // 0..1
+    Decls decls;
+};
+struct Keyframes {
+    std::string name;
+    std::vector<KeyframeStop> stops;   // sorted by offset
+};
+
 void parseSheet(const std::string& css, std::vector<Rule>& out,
+                std::map<std::string, Keyframes>& kf_out,
                 double media_min = -1, double media_max = -1) {
     size_t i = 0;
     auto skipBlock = [&](size_t p) {
@@ -718,16 +799,78 @@ void parseSheet(const std::string& css, std::vector<Rule>& out,
         std::string sel = css.substr(i, brace - i);
         size_t end = skipBlock(brace);
         std::string body = css.substr(brace + 1, end - brace - 2);
+        // sel runs from the end of the previous block, so an at-rule selector
+        // carries a leading `}` plus newline/indent. Trim it so the `@` test and
+        // the @media/@keyframes prefix compares below see the bare at-rule.
+        {
+            size_t sa = sel.find_first_not_of("} \t\r\n");
+            if (sa == std::string::npos) { i = end; continue; }
+            sel.erase(0, sa);
+        }
         // @media: parse the width constraint and recurse into the block so the
-        // inner rules carry it. Other at-rules (@keyframes) are still skipped.
+        // inner rules carry it.
         if (!sel.empty() && sel[0] == '@') {
-            std::string head = sel.substr(0, brace - i);
-            if (head.compare(0, 6, "@media") == 0) {
+            std::string head = sel;
+            if (head.size() >= 6 && head.substr(0, 6) == "@media") {
                 std::string cond = head.substr(6);
                 double mn, mx;
                 if (parseMediaWidth(cond, mn, mx))
-                    parseSheet(body, out, mn, mx);
+                    parseSheet(body, out, kf_out, mn, mx);
                 // An unevaluable @media (orientation, …) is dropped entirely.
+            }
+            // @keyframes name { from/50%/to { decls } }: collect the stops.
+            // The prefix "@keyframes" is 10 chars; head[10] is the separating space.
+            else if (head.size() > 10 && head.substr(0, 10) == "@keyframes") {
+                std::string name = head.substr(10);
+                // trim whitespace around the name
+                auto trim = [&](std::string& t) {
+                    size_t a = t.find_first_not_of(" \t\r\n");
+                    size_t b = t.find_last_not_of(" \t\r\n");
+                    t = (a == std::string::npos) ? "" : t.substr(a, b - a + 1);
+                };
+                trim(name);
+                if (!name.empty()) {
+                    Keyframes kf;
+                    kf.name = name;
+                    // Walk inner blocks "<offset> { decls }" with a local skipper
+                    // over `body`. Offsets: from=0, to=1, or a percentage.
+                    size_t p = 0;
+                    while (p < body.size()) {
+                        size_t ob = body.find('{', p);
+                        if (ob == std::string::npos) break;
+                        int depth = 0;
+                        size_t cb = ob;
+                        for (; cb < body.size(); cb++) {
+                            if (body[cb] == '{') depth++;
+                            else if (body[cb] == '}') { depth--; if (depth == 0) { cb++; break; } }
+                        }
+                        std::string stopSel = body.substr(p, ob - p);
+                        std::string stopBody = body.substr(ob + 1, cb - ob - 2);
+                        trim(stopSel);
+                        double off;
+                        if (psEq(stopSel, "from")) off = 0.0;
+                        else if (psEq(stopSel, "to")) off = 1.0;
+                        else {
+                            std::string num;
+                            for (char c : stopSel)
+                                if (isdigit((unsigned char)c) || c == '.' || c == '-')
+                                    num.push_back(c);
+                            off = std::atof(num.c_str()) / 100.0;
+                        }
+                        if (off >= 0.0 && off <= 1.0) {
+                            KeyframeStop st;
+                            st.offset = off;
+                            st.decls = parseDecls(stopBody);
+                            kf.stops.push_back(std::move(st));
+                        }
+                        p = cb;
+                    }
+                    std::stable_sort(kf.stops.begin(), kf.stops.end(),
+                                     [](const KeyframeStop& a, const KeyframeStop& b) {
+                                         return a.offset < b.offset;
+                                     });
+                    kf_out[name] = std::move(kf);
+                }
             }
             i = end;
             continue;
@@ -791,6 +934,9 @@ struct Node {
 struct Doc {
     std::map<int64_t, Node> nodes;
     std::vector<Rule> sheet;
+    // Named @keyframes animations, keyed by animation-name. Populated by
+    // parseSheet; the animation driver looks stages up here.
+    std::map<std::string, Keyframes> keyframes;
     std::string theme = "light";
     double width = 320;
     // Nodes under <head>, never rendered.
@@ -1360,6 +1506,13 @@ struct CuiRenderer::Impl {
     // not from the freshly-recomputed target. Absent = never animated.
     std::map<int64_t, std::map<std::string, AnimVal>> anim_now_;
     std::map<int64_t, std::map<std::string, TransRun>> trans_runs_;
+    // ── @keyframes state ──
+    // When this node's animation began (anim-clock ms), latched the first time
+    // the driver sees it so the clock starts at the node's birth, not doc load.
+    // A node not present here has not started yet.
+    std::map<int64_t, double> kf_start_;
+    // Nodes whose animation has run its finite course (frozen at the last stop).
+    std::set<int64_t> kf_done_;
     // Animation clock. Wall-clock by default; a host/test can freeze it and step
     // it deterministically via the {"type":"clock"} message.
     bool clock_virtual_ = false;
@@ -2127,6 +2280,9 @@ struct CuiRenderer::Impl {
         // relayout lays out from the interpolated value, not a hard jump to target.
         startTransitions();
         advanceTransitions();
+        // @keyframes: write the clock-positioned values over the computed style
+        // so this relayout lays out from the animated value.
+        advanceKeyframes();
         abs_nodes_.clear();
         Node& b = doc.nodes[body];
         double w = doc.width;
@@ -2260,6 +2416,99 @@ struct CuiRenderer::Impl {
             }
         }
         return any_active;
+    }
+
+    // ───────────── @keyframes driver ─────────────
+    // Evaluates every node's named animation against the shared anim clock and
+    // writes the interpolated property values into the node's style, exactly the
+    // way advanceTransitions drives transitions. Reuses readAnim/writeAnim/lerp
+    // so keyframes and transitions share one value model. Returns true if any
+    // animation is still running (the caller then keeps painting).
+    bool advanceKeyframes() {
+        double now = animNow();
+        bool any_active = false;
+        for (auto& [id, n] : doc.nodes) {
+            const std::string& name = n.style.anim_name;
+            if (name.empty()) continue;
+            auto itk = doc.keyframes.find(name);
+            if (itk == doc.keyframes.end()) continue;      // unknown name; ignore
+            const Keyframes& kf = itk->second;
+            if (kf.stops.size() < 2) continue;             // need >=2 stops to lerp
+            if (n.style.anim_duration_ms <= 0) continue;   // not animated
+            // Latch the start time the first time we see this node animating.
+            auto its = kf_start_.find(id);
+            if (its == kf_start_.end()) {
+                its = kf_start_.emplace(id, now).first;
+                kf_done_.erase(id);
+            }
+            double cycle = n.style.anim_duration_ms;
+            double t = now - its->second - n.style.anim_delay_ms;
+            if (t < 0) {                                    // still in the delay
+                any_active = true;
+                continue;
+            }
+            double iter = n.style.anim_iter;
+            double pos;
+            if (iter < 0) {                                 // infinite
+                pos = std::fmod(t, cycle) / cycle;
+                any_active = true;
+            } else {
+                double total = cycle * iter;
+                if (t >= total) {                           // finished: freeze at 100%
+                    pos = 1.0;
+                    kf_done_.insert(id);
+                } else {
+                    pos = std::fmod(t, cycle) / cycle;
+                    any_active = true;
+                }
+            }
+            // Apply each animatable declaration at the interpolated position: find
+            // the two stops bracketing `pos` and lerp the overlapping properties.
+            // A property only present at some stops takes the nearest bracketing
+            // value (CSS: a property not in a stop is interpolated from the stops
+            // that do mention it).
+            for (size_t s = 0; s + 1 < kf.stops.size(); s++) {
+                const KeyframeStop& a = kf.stops[s];
+                const KeyframeStop& b = kf.stops[s + 1];
+                if (pos < a.offset || pos > b.offset) continue;
+                double span = b.offset - a.offset;
+                double local = span > 0 ? (pos - a.offset) / span : 0.0;
+                local = applyEase(n.style.anim_ease, local);
+                // Values as of each bracketing stop, for the properties this node
+                // animates (read from the stops' own declarations).
+                for (const auto& kv : a.decls.kv) {
+                    const std::string& prop = kv.first;
+                    // The property must be one the engine animates.
+                    AnimVal from = animValFromDecl(prop, kv.second);
+                    if (!from.set) continue;
+                    // Find the same property at the upper stop (or carry `from`).
+                    AnimVal to = from;
+                    for (const auto& kv2 : b.decls.kv)
+                        if (kv2.first == prop) { to = animValFromDecl(prop, kv2.second); break; }
+                    AnimVal v = lerpAnim(from, to, local);
+                    writeAnim(n.style, prop, v);
+                }
+            }
+        }
+        return any_active;
+    }
+
+    // Parse one declaration value into an AnimVal, for the properties the engine
+    // animates. Returns set=false for anything else (mirrors readAnim's set=false
+    // for non-animatable properties).
+    static AnimVal animValFromDecl(const std::string& prop, const std::string& value) {
+        AnimVal v;
+        if (prop == "opacity") {
+            v.set = true; v.num = std::atof(value.c_str()); return v;
+        }
+        if (prop == "color" || prop == "background-color" || prop == "border-color") {
+            Rgba c;
+            if (parseColor(value, c)) { v.set = true; v.is_color = true; v.col = c; }
+            return v;
+        }
+        double px;
+        if (parseLenPx(value, px)) { v.set = true; v.num = px; return v; }
+        return v;
     }
 
     // ───────────── paint ─────────────
@@ -2466,7 +2715,7 @@ struct CuiRenderer::Impl {
             if (Node* n = node(doc, id)) setAttr(*n, "style", mergeStyle(*n, op["name"].asString(), op["value"].asString()));
         } else if (k == "css") {
             if (Node* n = node(doc, id)) if (n->tag == "style") n->data += op["text"].asString();
-            parseSheet(op["text"].asString(), doc.sheet);
+            parseSheet(op["text"].asString(), doc.sheet, doc.keyframes);
         } else if (k == "ins") {
             int64_t parent = (int64_t)op["parent"].asNumber();
             int64_t before = (int64_t)op["before"].asNumber();
@@ -2783,6 +3032,7 @@ CuiRenderer::Frame CuiRenderer::paint() {
     // interpolated values into the node styles before painting. Static documents
     // have no runs, so this is a no-op pass over an empty map.
     bool animating = impl_->advanceTransitions();
+    animating = impl_->advanceKeyframes() || animating;
     impl_->paintNode(body);
     cui_end_frame(impl_->ui);
     // An in-flight transition changes pixels every frame: ask the clock for the

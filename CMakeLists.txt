@@ -97,5 +97,7 @@ target_include_directories(pxdiff PRIVATE "${CUI_ROOT}/third_party")
 # a silent transition regression fails the build. Run: ./build/cuiw-transitions
 add_executable(cuiw-transitions tests/transitions.c)
 target_link_libraries(cuiw-transitions PRIVATE cui-widget)
+add_executable(cuiw-keyframes tests/keyframes.c)
+target_link_libraries(cuiw-keyframes PRIVATE cui-widget)
 
 message(STATUS "cui-widget: CUI_ROOT=${CUI_ROOT}")
