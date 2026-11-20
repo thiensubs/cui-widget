@@ -242,7 +242,7 @@ enum class Display { Block, Flex, Inline, Table, TableRowGroup, TableRow, TableC
 enum class FlexDir { Row, Column };
 enum class FlexWrap { NoWrap, Wrap };
 enum class TextDecoration { None, Underline, LineThrough };
-enum class Overflow { Visible, Hidden };
+enum class Overflow { Visible, Hidden, Scroll };
 // Vertical alignment of an inline run relative to the line's baseline. Stored as
 // a resolved CSS-px shift (negative = raise) so painting is a plain y offset.
 enum class VAlign { Baseline, Shift };
@@ -655,8 +655,13 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         else if (value.find("line-through") != std::string::npos) st.text_decoration = TextDecoration::LineThrough;
         else st.text_decoration = TextDecoration::None;
     } else if (is("overflow")) {
-        // hidden / clip / auto / scroll all clip content; visible does not.
-        st.overflow = value.find("visible") != std::string::npos ? Overflow::Visible : Overflow::Hidden;
+        // visible doesn't clip. scroll/auto make the box a scroll container
+        // (content is clipped to the box and offset by its scroll_top). hidden
+        // and clip clip but don't scroll.
+        if (value.find("visible") != std::string::npos) st.overflow = Overflow::Visible;
+        else if (value.find("scroll") != std::string::npos || value.find("auto") != std::string::npos)
+            st.overflow = Overflow::Scroll;
+        else st.overflow = Overflow::Hidden;
     } else if (is("vertical-align")) {
         // super/sub/middle resolve against the element's font size; a px length
         // is taken literally. Positive = raise (CSS), stored as a negative y shift.
@@ -1073,6 +1078,11 @@ struct Node {
     bool img_tried = false;           // decode attempted (success or failure)
     cui_texture img_tex = 0;          // uploaded texture, created lazily at paint
     bool img_tex_valid = false;
+    // Scroll container state (overflow: scroll/auto). The host sets scroll_top
+    // via the `prop` op; paintNode translates this box's content (text +
+    // children) up by it while the box frame and clip stay put. Clamped to
+    // [0, content - box] at paint so it can't scroll past the end.
+    double scroll_top = 0;
 };
 
 struct Doc {
@@ -2991,7 +3001,11 @@ struct CuiRenderer::Impl {
         cui_pop_clip(ui);
     }
 
-    void paintNode(int64_t id) {
+    // `content_dy` is the accumulated vertical offset from ancestor scroll
+    // containers (0 for a non-scrolled document, so non-scrolling docs are
+    // byte-identical to before). The box's own frame (background, border,
+    // shadow, clip) ignores it — only its content (text + children) translates.
+    void paintNode(int64_t id, double content_dy = 0) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) return;
         if (n.tag == "head" || !n.ever_rendered) { for (int64_t c : n.children) paintNode(c); return; }
@@ -3009,7 +3023,11 @@ struct CuiRenderer::Impl {
         // Draw in CSS logical points — cui_set_viewport(scale) scales them to
         // device px internally, so pre-multiplying here double-scales (the card
         // landed at 2x its CSS x). r/rad/border/font_size are all CSS units.
-        cui_rect r{(float)n.x, (float)n.y, (float)n.w, (float)n.h};
+        // content_dy is the offset inherited from a scrolled ancestor: this node
+        // is content inside that ancestor, so its whole box (background, border,
+        // shadow, clip) moves with the scroll. Its OWN scroll_top offsets only
+        // its children, applied further down via `eff`.
+        cui_rect r{(float)n.x, (float)(n.y + content_dy), (float)n.w, (float)n.h};
 #ifdef CUIW_LAYOUT_DEBUG
         if (n.tag == "div" || n.tag == "body")
             fprintf(stderr, "[paintgeo] tag=%s css_x=%g css_w=%g scale=%g\n",
@@ -3055,10 +3073,26 @@ struct CuiRenderer::Impl {
                 }
             }
         }
-        // overflow: hidden|scroll|auto clips content (text + children) to the
+        // overflow: hidden clips and scroll/auto clip + translate content to the
         // padding box. Background/border above are painted unclipped, matching
         // CSS — only descendant content is cut at the rounded edge.
-        const bool clips = (s.overflow == Overflow::Hidden && n.w > 0 && n.h > 0);
+        const bool clips = (s.overflow != Overflow::Visible && n.w > 0 && n.h > 0);
+        // A scroll container shifts its content up by its (clamped) scroll_top.
+        // The scrollable extent is how far the children run past the box bottom.
+        double scroll = 0;
+        if (s.overflow == Overflow::Scroll && n.h > 0) {
+            double content_bottom = n.y;
+            for (int64_t c : n.children) {
+                Node& ch = doc.nodes[c];
+                content_bottom = std::max(content_bottom, ch.y + ch.h);
+            }
+            double scrollable = std::max(0.0, content_bottom - (n.y + n.h));
+            scroll = std::clamp(n.scroll_top, 0.0, scrollable);
+        }
+        // eff is the total y offset for this box's CONTENT (text + children):
+        // the offset inherited from ancestor scrollers minus this box's scroll.
+        // The box frame itself ignores it and stays at n.x/n.y.
+        const double eff = content_dy - scroll;
         if (clips) {
             double pad_t = s.pad[0] + s.border, pad_r = s.pad[1] + s.border;
             double pad_b = s.pad[2] + s.border, pad_l = s.pad[3] + s.border;
@@ -3073,13 +3107,13 @@ struct CuiRenderer::Impl {
             for (const auto& sg : n.segs)
                 if (!sg.text.empty()) {
                     cui_draw_text(ui, fontFor(s), (float)s.font_size,
-                                  cui_vec2{ (float)sg.x, (float)sg.y }, col, sg.text.c_str(), -1);
-                    drawTextDecoration(s, sg.x, sg.y, sg.w);
+                                  cui_vec2{ (float)sg.x, (float)(sg.y + eff) }, col, sg.text.c_str(), -1);
+                    drawTextDecoration(s, sg.x, sg.y + eff, sg.w);
                 }
         }
         else if (n.kind == Node::Text && !n.lines.empty()) {
             cui_color col = paintColor(s.color, s.opacity);
-            double ty = n.y;
+            double ty = n.y + eff;
             for (const auto& ln : n.lines) {
                 if (!ln.text.empty()) {
                     /* text-align: offset the line within the text box (n.w).
@@ -3098,7 +3132,7 @@ struct CuiRenderer::Impl {
                 ty += n.line_height_px;
             }
         }
-        for (int64_t c : n.children) paintNode(c);
+        for (int64_t c : n.children) paintNode(c, eff);
         if (clips) cui_pop_clip(ui);
     }
 
@@ -3238,7 +3272,17 @@ struct CuiRenderer::Impl {
                 }
                 doc.nodes.erase(id);
             }
-        } else if (k == "prop") { /* scrollTop/scrollLeft: no scrolling yet */ }
+        } else if (k == "prop") {
+            // The host drives scrolling: {"op":"prop","id":N,"name":"scrollTop",
+            // "value":Y}. Only vertical is modelled. The value is clamped at
+            // paint time (once the box and its content heights are known), so
+            // here we just store it; a non-scrollable box ignores it.
+            if (Node* n = node(doc, id)) {
+                std::string nm = op["name"].asString();
+                double v = op["value"].asNumber();
+                if (nm == "scrollTop") n->scroll_top = v;
+            }
+        }
         else if (k == "call") { /* scrollTo/setPointerCapture: no-ops here */ }
         else if (k == "canvas") {
             // Record a batch of 2D-context commands against the canvas element.

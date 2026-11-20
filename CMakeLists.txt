@@ -111,5 +111,7 @@ add_executable(cuiw-images tests/images.c)
 target_link_libraries(cuiw-images PRIVATE cui-widget)
 add_executable(cuiw-svgtext tests/svgtext.c)
 target_link_libraries(cuiw-svgtext PRIVATE cui-widget)
+add_executable(cuiw-scroll tests/scroll.c)
+target_link_libraries(cuiw-scroll PRIVATE cui-widget)
 
 message(STATUS "cui-widget: CUI_ROOT=${CUI_ROOT}")

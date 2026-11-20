@@ -123,7 +123,8 @@ grids and tables, float things, set sizes as percentages, pin things in place,
 round corners, color and style text, fade things in and out, draw little vector
 icons with **text labels**, animate things, draw freehand into a box (and stamp
 a **picture** into it), paint a **gradient** background, drop a soft **shadow**
-behind a box, and show a **picture**.
+behind a box, show a **picture**, and make a box that **scrolls** when its
+content is taller than the box.
 
 The full list, with what each one does and doesn't cover:
 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
