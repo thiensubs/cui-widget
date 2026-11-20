@@ -1033,7 +1033,7 @@ struct CanvasCmd {
         FillStyle, StrokeStyle, LineWidth, GlobalAlpha,
         FillRect, ClearRect, StrokeRect,
         BeginPath, MoveTo, LineTo, Rect, Arc, ClosePath, Fill, Stroke,
-        FillText
+        FillText, DrawImage
     };
     Kind kind;
     double a[6] = {0, 0, 0, 0, 0, 0};
@@ -1679,9 +1679,26 @@ struct CuiRenderer::Impl {
         // Release every cached <img> texture before the CUI context goes away.
         for (auto& [id, n] : doc.nodes)
             if (n.img_tex_valid && ui) cui_image_destroy(ui, n.img_tex);
+        // And every canvas drawImage texture cached by data: URL.
+        for (auto& [url, tex] : canvas_img_tex_)
+            if (tex != 0 && ui) cui_image_destroy(ui, tex);
         if (ui) cui_destroy(ui);
         if (sw) cui_sw_destroy(sw);
     }
+
+    // Returns a texture for a canvas drawImage data: URL, decoding and uploading
+    // it on first use and caching by URL so repeated frames don't re-decode.
+    cui_texture canvasImageTex(const std::string& url, int& w, int& h) {
+        auto it = canvas_img_tex_.find(url);
+        if (it != canvas_img_tex_.end()) return it->second;
+        std::vector<uint8_t> px;
+        cui_texture tex = 0;
+        if (cuiw_img::decode_data_url(url, px, w, h) && !px.empty())
+            tex = cui_image_create(ui, w, h, px.data());
+        canvas_img_tex_[url] = tex;   // cache even a failure (0) to avoid retry
+        return tex;
+    }
+    std::map<std::string, cui_texture> canvas_img_tex_;
 
     void retheme() {
         cui_set_theme(ui, doc.theme == "dark" ? CUI_THEME_DARK : CUI_THEME_LIGHT);
@@ -2706,6 +2723,48 @@ struct CuiRenderer::Impl {
         std::vector<cuiw_svg::Path> paths;
         collectSvgShapes(id, paths);
         cuiw_svg::paintPaths(ui, paths, x, clip);
+        // Labels (<text>) paint after the shapes so they sit on top of them.
+        paintSvgText(id, x, clip);
+    }
+
+    // Depth-walks an SVG subtree drawing <text> elements. x/y are viewBox coords
+    // mapped through the same transform as the shapes; y is the baseline (SVG),
+    // so we step up by ~the ascent to get the draw origin cui_draw_text expects.
+    // Font size / fill / text-anchor come from the element (presentation attrs
+    // resolve through the cascade); a missing fill falls back to the text color.
+    void paintSvgText(int64_t id, const cuiw_svg::Xform& xf, const cui_rect& clip) {
+        for (int64_t cid : doc.nodes[id].children) {
+            Node& c = doc.nodes[cid];
+            if (c.kind == Node::Element && c.tag == "text") {
+                // The string is the concatenated text-node children.
+                std::string str;
+                for (int64_t gc : c.children) {
+                    Node& t = doc.nodes[gc];
+                    if (t.kind == Node::Text) str += t.data;
+                }
+                if (!str.empty()) {
+                    double vx = std::atof(getAttr(c, "x").c_str());
+                    double vy = std::atof(getAttr(c, "y").c_str());
+                    cuiw_svg::Pt sp = cuiw_svg::apply(xf, {vx, vy});
+                    double fsize = c.style.font_size;
+                    std::string fs = getAttr(c, "font-size");
+                    if (!fs.empty()) { double px; if (parseLenPx(fs, px)) fsize = px; }
+                    // baseline -> top: the ascent is roughly 0.8 of the font size.
+                    float px_x = (float)sp.x, px_y = (float)(sp.y - fsize * 0.8);
+                    std::string anchor = getAttr(c, "text-anchor");
+                    if (anchor == "middle" || anchor == "end") {
+                        float w = (float)textWidth(c.style, str);
+                        if (anchor == "middle") px_x -= w / 2.f;
+                        else px_x -= w;
+                    }
+                    Rgba col = c.style.fill.a > 0 ? c.style.fill : c.style.color;
+                    cui_draw_text(ui, fontFor(c.style), (float)fsize,
+                                  cui_vec2{px_x, px_y},
+                                  paintColor(col, c.style.opacity), str.c_str(), -1);
+                }
+            }
+            paintSvgText(cid, xf, clip);
+        }
     }
 
     // Depth-walks an SVG subtree turning shape elements into Path records. Group
@@ -2869,6 +2928,23 @@ struct CuiRenderer::Impl {
                                       col, c.text.c_str(), -1);
                     }
                     break;
+                case CanvasCmd::DrawImage: {
+                    // Decode the data: URL once (cached by URL) and draw it into
+                    // the dest rect (x, y, w, h), scaled to cover like <img>.
+                    int iw = 0, ih = 0;
+                    cui_texture tex = canvasImageTex(c.text, iw, ih);
+                    if (tex == 0 || iw <= 0 || ih <= 0 || c.a[2] <= 0 || c.a[3] <= 0) break;
+                    double bw = c.a[2], bh = c.a[3];
+                    double dw, dh;
+                    double bar = bw / bh, iar = (double)iw / (double)ih;
+                    if (iar > bar) { dh = bh; dw = bh * iar; }
+                    else { dw = bw; dh = bw / iar; }
+                    double dx = c.a[0] + (bw - dw) / 2.0, dy = c.a[1] + (bh - dh) / 2.0;
+                    cui_rect dst{(float)(ox + dx), (float)(oy + dy), (float)dw, (float)dh};
+                    cui_draw_image(ui, tex, dst, cui_rect{0, 0, 1, 1},
+                                   CUI_CORNERS(0), CUI_TRANSPARENT);
+                    break;
+                }
             }
         }
         cui_pop_clip(ui);
@@ -3084,6 +3160,14 @@ struct CuiRenderer::Impl {
             cc.kind = CanvasCmd::FillText;
             cc.text = str(1); cc.a[0] = num(2); cc.a[1] = num(3);
             return true;
+        }
+        // drawImage(<data: URL>, x, y, w, h): the URL rides in cc.text, the dest
+        // rect in a[0..3]. The URL is decoded once and cached by the caller.
+        if (name == "drawImage") {
+            cc.kind = CanvasCmd::DrawImage;
+            cc.text = str(1);
+            cc.a[0] = num(2); cc.a[1] = num(3); cc.a[2] = num(4); cc.a[3] = num(5);
+            return !cc.text.empty();
         }
         return false;
     }

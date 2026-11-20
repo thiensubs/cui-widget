@@ -121,8 +121,9 @@ It understands a big, useful slice of CSS — **30 of 30** things we track, so
 nothing on the list is missing. You can lay things out in rows and columns, make
 grids and tables, float things, set sizes as percentages, pin things in place,
 round corners, color and style text, fade things in and out, draw little vector
-icons, animate things, draw freehand into a box, paint a **gradient**
-background, drop a soft **shadow** behind a box, and show a **picture**.
+icons with **text labels**, animate things, draw freehand into a box (and stamp
+a **picture** into it), paint a **gradient** background, drop a soft **shadow**
+behind a box, and show a **picture**.
 
 The full list, with what each one does and doesn't cover:
 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
