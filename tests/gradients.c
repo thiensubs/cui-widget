@@ -92,6 +92,31 @@ int main(void) {
     }
     cuiw_destroy(r2);
 
+    /* Horizontal gradient (to right): left edge red, right edge blue. */
+    cuiw_renderer_t r3 = cuiw_create("light", 200, dpr);
+    if (!r3) { fprintf(stderr, "create failed\n"); return 1; }
+    if (!send(r3,
+        "{\"type\":\"ops\",\"ops\":["
+        "{\"op\":\"el\",\"id\":2,\"tag\":\"body\",\"attrs\":[],\"adopt\":\"body\"},"
+        "{\"op\":\"css\",\"id\":0,\"text\":\"body{margin:0;padding:16px;background:#ffffff}"
+        ".h{width:100px;height:40px;background:linear-gradient(to right,#ff0000,#0000ff)}\"},"
+        "{\"op\":\"el\",\"id\":20,\"tag\":\"div\",\"attrs\":[[\"class\",\"h\"]],\"adopt\":\"body\"},"
+        "{\"op\":\"ins\",\"parent\":2,\"id\":20,\"before\":null}"
+        "]}")) return 1;
+    int R3, G3, B3;
+    /* Box spans CSS x 16..116. Left ~ red, right ~ blue. */
+    sample(r3, dpr, 26, 36, &R3, &G3, &B3);
+    printf("horizontal left  rgb(%3d,%3d,%3d)  want reddish (R>B)\n", R3, G3, B3);
+    if (!(R3 > B3)) {
+        fprintf(stderr, "FAIL: horizontal left is not reddish\n"); fails++;
+    }
+    sample(r3, dpr, 106, 36, &R3, &G3, &B3);
+    printf("horizontal right rgb(%3d,%3d,%3d)  want bluish (B>R)\n", R3, G3, B3);
+    if (!(B3 > R3)) {
+        fprintf(stderr, "FAIL: horizontal right is not bluish\n"); fails++;
+    }
+    cuiw_destroy(r3);
+
     if (fails) { fprintf(stderr, "gradients: %d FAIL\n", fails); return 1; }
     printf("gradients: PASS\n");
     return 0;
