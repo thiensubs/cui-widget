@@ -71,6 +71,24 @@ real music app would show:
 Build it with `python3 tools/showcase_app.py > docs/showcase_app.json &&
 ./build/cuiw-render docs/showcase_app.json docs/showcase_app.png 380 2 dark`.
 
+And here is a **developer dashboard** — the clearest picture of what the brain
+adds. Look at what is doing the work:
+
+![A developer dashboard: a 2x2 stat grid, a gradient bar chart, a scrolling event log, and wrapping service tags](docs/showcase_dashboard.png)
+
+- The **2×2 stat grid** is `display:grid` — the boxes place themselves. The brush
+  has no idea what a grid is; you would count every x/y by hand.
+- The **bar chart** is a `<canvas>`: each bar is `translate` + `scale` + a gradient
+  fill. Change a number and the bar redraws itself.
+- The **event log** scrolls (`overflow:scroll`) — content taller than its box.
+- The **service tags** wrap on their own (`display:flex;flex-wrap:wrap`) — add a
+  tag and the row re-flows. Nothing was positioned by hand.
+- Every card drops a soft **shadow** and reads its colours from one `:root`
+  block of **CSS variables**.
+
+Build it with `python3 tools/showcase_dashboard.py > docs/showcase_dashboard.json &&
+./build/cuiw-render docs/showcase_dashboard.json docs/showcase_dashboard.png 380 2 dark`.
+
 ## No hidden roommates
 
 This toolbox **only needs CUI and the normal C/C++ tools**. There is no hidden
