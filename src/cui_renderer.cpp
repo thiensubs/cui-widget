@@ -156,7 +156,15 @@ std::string trimCopy(const std::string& s) {
 // optional (defaults to "to bottom"); "to top" swaps the two stops. Only a
 // two-stop, vertical gradient is modelled — other directions and extra stops
 // fall back to a top->bottom render. Returns false if two colors can't be read.
-bool parseLinearGradient(const std::string& value, Rgba& top, Rgba& bottom) {
+// Parses "linear-gradient(<direction>, <color> [pos], <color> [pos], ...)" into
+// ordered stops. The direction is optional (default "to bottom"); "to top"
+// reverses the stop order. Each stop is an (offset, color) pair with offset in
+// [0,1]: a stop may carry an explicit position ("<color> 40%"); stops without one
+// are spaced evenly between their positioned neighbours. Returns false if fewer
+// than two colors can be read.
+bool parseLinearGradient(const std::string& value,
+                         std::vector<std::pair<double, Rgba>>& stops) {
+    stops.clear();
     size_t p = value.find('(');
     if (p == std::string::npos) return false;
     size_t q = value.rfind(')');
@@ -183,15 +191,51 @@ bool parseLinearGradient(const std::string& value, Rgba& top, Rgba& bottom) {
     bool dir_given = first.rfind("to ", 0) == 0 || first.find("deg") != std::string::npos;
     bool reverse = first.find("to top") != std::string::npos;
     if (dir_given) ci = 1;
-    std::vector<Rgba> cols;
+    // Collect (offset, color); offset < 0 marks "not given".
+    std::vector<std::pair<double, Rgba>> raw;
     for (size_t i = ci; i < parts.size(); i++) {
+        // A stop is "<color>" or "<color> <position>". Split paren-aware so a
+        // rgba() color stays one token.
+        auto toks = splitParenAware(parts[i]);
+        if (toks.empty()) continue;
         Rgba c;
-        if (parseColor(parts[i], c)) cols.push_back(c);
+        if (!parseColor(toks[0], c)) continue;
+        double off = -1.0;
+        if (toks.size() >= 2) {
+            std::string pos = toks[1];
+            if (!pos.empty() && pos.back() == '%') {
+                off = std::atof(pos.c_str()) / 100.0;
+                if (off < 0) off = 0;
+                if (off > 1) off = 1;
+            }
+        }
+        raw.push_back({off, c});
     }
-    if (cols.size() < 2) return false;
-    top = reverse ? cols.back() : cols.front();
-    bottom = reverse ? cols.front() : cols.back();
-    return true;
+    if (raw.size() < 2) return false;
+    // Assign offsets: keep the explicit ones, space the rest evenly between the
+    // brackets they sit in (CSS: even distribution when no position is given).
+    if (raw.front().first < 0) raw.front().first = 0.0;
+    if (raw.back().first < 0) raw.back().first = 1.0;
+    for (size_t i = 1; i + 1 < raw.size(); i++) {
+        if (raw[i].first >= 0) continue;
+        // Find the nearest positioned stop before and after i.
+        size_t lo = i - 1, hi = i + 1;
+        while (lo > 0 && raw[lo].first < 0) lo--;
+        while (hi + 1 < raw.size() && raw[hi].first < 0) hi++;
+        double a = raw[lo].first, b = raw[hi].first;
+        if (b < a) b = a;
+        double span = (double)(hi - lo);
+        raw[i].first = a + (b - a) * (double)(i - lo) / span;
+    }
+    // Enforce non-decreasing offsets (CSS clamps out-of-order stops).
+    for (size_t i = 1; i < raw.size(); i++)
+        if (raw[i].first < raw[i - 1].first) raw[i].first = raw[i - 1].first;
+    stops = raw;
+    if (reverse) {
+        for (auto& s : stops) s.first = 1.0 - s.first;
+        std::reverse(stops.begin(), stops.end());
+    }
+    return stops.size() >= 2;
 }
 
 // Parses "box-shadow: <x> <y> <blur> <spread> <color>". The offsets are required
@@ -276,10 +320,11 @@ struct Style {
     double radius = 0;
     double border = 0;
     Rgba border_color{0, 0, 0, 1};
-    // Linear gradient background (background-image: linear-gradient(...)). Two
-    // stops rendered top->bottom. has_gradient=false = paint the flat bg.
+    // Linear gradient background (background-image: linear-gradient(...)). Stops
+    // are (offset, color) pairs sorted top->bottom, offset in [0,1]. Empty = paint
+    // the flat bg.
     bool has_gradient = false;
-    Rgba grad_top{0, 0, 0, 0}, grad_bottom{0, 0, 0, 0};
+    std::vector<std::pair<double, Rgba>> grad_stops;
     // box-shadow: offset (x, y), blur, spread, color. Drawn behind the box.
     bool has_shadow = false;
     double shadow_x = 0, shadow_y = 0, shadow_blur = 0, shadow_spread = 0;
@@ -613,9 +658,9 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         // A linear-gradient paints over a flat color (CSS: background-image over
         // background-color). The `background` shorthand can carry either, so try
         // the gradient first and fall back to a flat color.
-        Rgba top, bottom;
-        if (parseLinearGradient(value, top, bottom)) {
-            st.has_gradient = true; st.grad_top = top; st.grad_bottom = bottom;
+        std::vector<std::pair<double, Rgba>> stops;
+        if (parseLinearGradient(value, stops)) {
+            st.has_gradient = true; st.grad_stops = stops;
             st.bg = {0, 0, 0, 0};
         }
         else if (!is("background-image")) {
@@ -626,9 +671,9 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     else if (is("background-image")) {
         // Only linear-gradient is modelled; other image types (url(), radial-)
         // don't parse and leave the background unchanged.
-        Rgba top, bottom;
-        if (parseLinearGradient(value, top, bottom)) {
-            st.has_gradient = true; st.grad_top = top; st.grad_bottom = bottom;
+        std::vector<std::pair<double, Rgba>> stops;
+        if (parseLinearGradient(value, stops)) {
+            st.has_gradient = true; st.grad_stops = stops;
         }
     }
     else if (is("box-shadow")) {
@@ -3063,9 +3108,24 @@ struct CuiRenderer::Impl {
             // A gradient replaces the flat fill (the gradient wins when both are
             // set, matching CSS where background-image paints over background-color).
             if (s.has_gradient) {
-                cui_draw_rect_gradient(ui, r, rad,
-                                       paintColor(s.grad_top, s.opacity),
-                                       paintColor(s.grad_bottom, s.opacity));
+                // Draw one band per pair of adjacent stops, each a top->bottom
+                // gradient across its slice of the box. The first band carries the
+                // top corners and the last the bottom corners, so the rounded edge
+                // is preserved without a clip; middle bands are square.
+                const auto& st2 = s.grad_stops;
+                size_t nb = st2.size();
+                for (size_t b = 0; b + 1 < nb; b++) {
+                    double y0 = n.y + st2[b].first * n.h;
+                    double y1 = n.y + st2[b + 1].first * n.h;
+                    if (y1 <= y0) continue;
+                    cui_rect band{(float)n.x, (float)y0, (float)n.w, (float)(y1 - y0)};
+                    bool first = (b == 0), last = (b + 2 == nb);
+                    cui_corners bcorner{ first ? rad.tl : 0, first ? rad.tr : 0,
+                                         last ? rad.br : 0, last ? rad.bl : 0 };
+                    cui_draw_rect_gradient(ui, band, bcorner,
+                                           paintColor(st2[b].second, s.opacity),
+                                           paintColor(st2[b + 1].second, s.opacity));
+                }
                 if (s.border > 0)
                     cui_draw_rect_border(ui, r, rad, CUI_TRANSPARENT,
                                          paintColor(s.border_color, s.opacity),

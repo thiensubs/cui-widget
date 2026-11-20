@@ -63,7 +63,7 @@ class Doc:
 CSS = """
 body{margin:0;padding:18px;background:#0b0f14;font-size:14px;color:#e6edf5}
 .card{border-radius:20px;overflow:scroll;height:620px;
-  background:linear-gradient(to bottom,#2a3a5c,#141b2b);
+  background:linear-gradient(to bottom,#2f4066 0%,#1a2338 50%,#0e1420 100%);
   box-shadow:0 20px 44px rgba(0,0,0,0.6)}
 .hero{display:flex;gap:16px;padding:18px;align-items:center}
 .cover{width:104px;height:104px;border-radius:14px;flex:none;
