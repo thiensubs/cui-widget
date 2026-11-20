@@ -14,7 +14,7 @@ Two rules govern this table:
 
 ## The matrix
 
-**Supported — 22**
+**Supported — 25**
 
 | feature | enum | notes |
 | --- | --- | --- |
@@ -41,17 +41,17 @@ Two rules govern this table:
 | text-decoration | `CUIW_FEATURE_TEXT_DECORATION` | `underline` / `line-through`; propagates to descendant text like `color` |
 | position: absolute | `CUIW_FEATURE_ABSOLUTE_POSITION` | out-of-flow box against the nearest positioned ancestor's padding box; `top`/`right`/`bottom`/`left` offsets, shrink-to-fit or explicit width. No `z-index` stacking contexts yet |
 | grid | `CUIW_FEATURE_GRID` | `display: grid`; `grid-template-columns`/`grid-template-rows` (px/`%`/`fr`/auto), `gap`/`row-gap`/`column-gap`; auto-placement row-major, items stretch to row height. No explicit `grid-column`/`grid-row` placement, no spanning, no dense packing; `fr` rows treated as auto |
+| inline-svg | `CUIW_FEATURE_INLINE_SVG` | an `<svg>` subtree paints geometrically through the rasterizer: `<rect>` (incl. `rx`/`ry`), `<circle>`, `<ellipse>`, `<line>`, `<polyline>`, `<polygon>`, and `<path d>` with `M/L/H/V/C/Q/Z` (absolute + relative; curves flattened). `fill`/`stroke`/`stroke-width`/`fill-opacity`/`stroke-opacity` resolve through the CSS cascade and inherit; `viewBox` maps into the element box with `xMidYMid meet`. Not modelled: `<text>` inside SVG (labels use the host's HTML text), gradients, `<transform>`, filters, nested `<svg>`, the arc (`A`) path command |
 | transitions | `CUIW_FEATURE_TRANSITIONS` | `transition` shorthand + the four longhands; timing `linear`/`ease`/`ease-in`/`ease-out`/`ease-in-out` (cubic-bezier); animates opacity, `color`/`background-color`/`border-color`, and px lengths (width/height/min-height/border-radius/border-width/font-size/gap/padding/margin/insets) on a per-frame anim clock. No `cubic-bezier()`/`steps()` author values (fall back to `ease`), no keyframes |
 
-**Not yet — 3**
+**Not yet — 2**
 
 | feature | enum | status |
 | --- | --- | --- |
 | keyframes | `CUIW_FEATURE_KEYFRAMES` | no animation |
 | canvas | `CUIW_FEATURE_CANVAS` | no 2D canvas |
-| inline-svg | `CUIW_FEATURE_INLINE_SVG` | no SVG |
 
-**Totals:** 27 tracked, 24 supported, 3 not yet.
+**Totals:** 27 tracked, 25 supported, 2 not yet.
 
 ## How to check a document against this
 

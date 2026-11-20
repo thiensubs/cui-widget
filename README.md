@@ -12,20 +12,9 @@ widgets itself, with **no ceiling but the host's own resources**.
 
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  your application (trusted)                             │
-│    ├─ owns the RenderOps document                       │
-│    ├─ calls cuiw_send(ops json) / cuiw_touch / cuiw_paint│
-│    └─ draws the returned RGBA frame                     │
-├─────────────────────────────────────────────────────────┤
-│  libcui-widget            (this library, C ABI)         │
-│    document → CSS cascade → layout → widget paint       │
-│    (block + flex, hit-testing, frame clock)             │
-├─────────────────────────────────────────────────────────┤
-│  libcui                   (drawing primitives, raster)  │
-└─────────────────────────────────────────────────────────┘
-```
+Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
+`cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget
+paint, and draws through libcui's rasterizer.
 
 ## Isolation
 
@@ -58,9 +47,8 @@ cmake --build build
 
 ## Drop-in (amalgamation)
 
-CUI ships as *"two files, `cui.h` and `cui.c`, dropped into your project."* This
-library matches the drop-in half — run `python3 tools/amalgamate.py` to emit
-`cuiw.h` + `cuiw.cpp`, then put **four** files in one directory (`cui.h cui.c`
+Like CUI ("two files"), this library drops in: `python3 tools/amalgamate.py`
+emits `cuiw.h` + `cuiw.cpp`. Put **four** files in one directory (`cui.h cui.c`
 are CUI's) and compile:
 
 ```sh
@@ -69,11 +57,10 @@ clang++ -std=c++20 -O2 -I. -DCUI_DROPIN -c cuiw.cpp -o cuiw.o
 clang++ -std=c++20 -O2 -I. -DCUI_DROPIN my_app.cpp cuiw.o cui.o -o my_app
 ```
 
-`-DCUI_NO_APP` drops CUI's window layer — correct for a headless renderer.
-Verified to render a PNG **byte-identical** to the CMake build. The honest line
-is *"four files, two of them CUI's, no build system, needs C++20"* — **not**
-"no dependencies." (macOS: compile `cui.c` as C, not Objective-C — the window
-layer's Cocoa headers break under ObjC; `-DCUI_NO_APP` sidesteps it.)
+`-DCUI_NO_APP` drops CUI's window layer (correct headless, and on macOS compile
+`cui.c` as C — Cocoa headers break under ObjC). Renders a PNG **byte-identical**
+to the CMake build. Honest line: *"four files, two of them CUI's, needs C++20"* —
+**not** "no dependencies."
 
 ## Using it (C ABI — `include/cuiw.h`)
 
@@ -120,7 +107,7 @@ push. A deliberate change is a **deliberate golden update**: regenerate with
 
 ## Capabilities
 
-A **block + flexbox subset** of CSS — **24 of 27** tracked features: block & flex
+A **block + flexbox subset** of CSS — **25 of 27** tracked features: block & flex
 layout (incl. flex-wrap), id/class/tag selectors, border-radius, text-align,
 font-weight, min-height, `vertical-align` (super/sub/middle/length), CSS variables
 (`var()`, custom properties, `:root`), opacity compositing, structural
@@ -131,9 +118,11 @@ percent width & height, inline layout, CSS tables (auto column widths,
 `colspan`), `overflow: hidden` clipping, `text-decoration`, `position: absolute`,
 grid (`display: grid`, `grid-template-columns`/`rows`, `gap`; auto-placement),
 transitions (`transition` shorthand + longhands, `linear`/`ease`/`ease-in`/
-`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths).
+`ease-out`/`ease-in-out`; animates opacity, colors, and px lengths), and inline
+SVG (an `<svg>` subtree — `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/
+`path`, `fill`/`stroke`, `viewBox` — painted through the rasterizer).
 
-Not yet: keyframes, canvas, inline SVG.
+Not yet: keyframes, canvas.
 Full table: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
 > **Honest limitation.** This is a subset engine, not a browser layout engine.

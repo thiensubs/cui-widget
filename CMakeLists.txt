@@ -42,6 +42,7 @@ set_target_properties(cui-rs PROPERTIES IMPORTED_LOCATION
 add_library(cui-widget STATIC
     src/cuiw.cpp
     src/cui_renderer.cpp
+    src/cui_svg.cpp
 )
 target_compile_features(cui-widget PUBLIC cxx_std_20)
 target_include_directories(cui-widget PUBLIC

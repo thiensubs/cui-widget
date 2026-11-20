@@ -191,6 +191,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_OVERFLOW_SCROLL:
         case CUIW_FEATURE_TEXT_DECORATION:
         case CUIW_FEATURE_ABSOLUTE_POSITION:
+        case CUIW_FEATURE_INLINE_SVG:
             return true;
         default:
             return false;

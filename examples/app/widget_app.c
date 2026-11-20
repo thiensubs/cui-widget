@@ -49,6 +49,8 @@ static const char *kAppOps =
       ".primary{background:#2563eb;color:#ffffff}"
       ".ghost{background:#e5e7eb;color:#1f2937}"
       ".footer{font-size:12px;color:#9ca3af;text-align:center;margin-top:16px}"
+      ".actions{display:flex;justify-content:space-between;align-items:center;margin:6px 4px 4px 4px}"
+      ".action{display:flex;gap:6px;align-items:center;font-size:13px;color:#6b7280}"
       "#title{text-align:center}\"},"
 
     /* A profile card: block layout, min-height, border-radius. */
@@ -85,6 +87,60 @@ static const char *kAppOps =
     "{\"op\":\"text\",\"id\":21,\"data\":\"Message\"},"
     "{\"op\":\"ins\",\"parent\":20,\"id\":21,\"before\":null},"
 
+    /* A post action bar — the everyday app use case for inline SVG: UI icons
+     * drawn as vectors, no icon font, no image assets. Each icon is a small
+     * <svg> exercising a different shape feature (curved path, polyline, arcs
+     * flattened, stroked-only path). */
+    "{\"op\":\"el\",\"id\":30,\"tag\":\"div\",\"attrs\":[[\"class\",\"actions\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":10,\"id\":30,\"before\":null},"
+
+    /* Like — a heart (fill + stroke), curved cubic path. */
+    "{\"op\":\"el\",\"id\":31,\"tag\":\"div\",\"attrs\":[[\"class\",\"action\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":30,\"id\":31,\"before\":null},"
+    "{\"op\":\"el\",\"id\":32,\"tag\":\"svg\",\"ns\":\"svg\",\"attrs\":[[\"viewBox\",\"0 0 24 24\"],[\"width\",\"18\"],[\"height\",\"18\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":31,\"id\":32,\"before\":null},"
+    "{\"op\":\"el\",\"id\":33,\"tag\":\"path\",\"ns\":\"svg\",\"attrs\":[[\"d\",\"M12 20 C 4 14 3 9 6 6.5 C 8.5 4.5 11 6 12 8 C 13 6 15.5 4.5 18 6.5 C 21 9 20 14 12 20 Z\"],[\"fill\",\"#ef4444\"],[\"stroke\",\"#b91c1c\"],[\"stroke-width\",\"1.2\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":32,\"id\":33,\"before\":null},"
+    "{\"op\":\"el\",\"id\":47,\"tag\":\"span\",\"attrs\":[],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":31,\"id\":47,\"before\":null},"
+    "{\"op\":\"text\",\"id\":34,\"data\":\"128\"},"
+    "{\"op\":\"ins\",\"parent\":47,\"id\":34,\"before\":null},"
+
+    /* Comment — a speech bubble (stroked only, no fill). */
+    "{\"op\":\"el\",\"id\":35,\"tag\":\"div\",\"attrs\":[[\"class\",\"action\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":30,\"id\":35,\"before\":null},"
+    "{\"op\":\"el\",\"id\":36,\"tag\":\"svg\",\"ns\":\"svg\",\"attrs\":[[\"viewBox\",\"0 0 24 24\"],[\"width\",\"18\"],[\"height\",\"18\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":35,\"id\":36,\"before\":null},"
+    "{\"op\":\"el\",\"id\":37,\"tag\":\"path\",\"ns\":\"svg\",\"attrs\":[[\"d\",\"M4 5 L20 5 L20 15 L11 15 L7 19 L7 15 L4 15 Z\"],[\"fill\",\"none\"],[\"stroke\",\"#6b7280\"],[\"stroke-width\",\"1.6\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":36,\"id\":37,\"before\":null},"
+    "{\"op\":\"el\",\"id\":48,\"tag\":\"span\",\"attrs\":[],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":35,\"id\":48,\"before\":null},"
+    "{\"op\":\"text\",\"id\":38,\"data\":\"42\"},"
+    "{\"op\":\"ins\",\"parent\":48,\"id\":38,\"before\":null},"
+
+    /* Share — a paper plane (filled), a concave polygon. */
+    "{\"op\":\"el\",\"id\":39,\"tag\":\"div\",\"attrs\":[[\"class\",\"action\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":30,\"id\":39,\"before\":null},"
+    "{\"op\":\"el\",\"id\":40,\"tag\":\"svg\",\"ns\":\"svg\",\"attrs\":[[\"viewBox\",\"0 0 24 24\"],[\"width\",\"18\"],[\"height\",\"18\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":39,\"id\":40,\"before\":null},"
+    "{\"op\":\"el\",\"id\":41,\"tag\":\"polygon\",\"ns\":\"svg\",\"attrs\":[[\"points\",\"3 12 21 4 14 21 11 13\"],[\"fill\",\"#6b7280\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":40,\"id\":41,\"before\":null},"
+    "{\"op\":\"el\",\"id\":49,\"tag\":\"span\",\"attrs\":[],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":39,\"id\":49,\"before\":null},"
+    "{\"op\":\"text\",\"id\":42,\"data\":\"19\"},"
+    "{\"op\":\"ins\",\"parent\":49,\"id\":42,\"before\":null},"
+
+    /* Save — a bookmark (stroked), exercising a notch via a path. */
+    "{\"op\":\"el\",\"id\":43,\"tag\":\"div\",\"attrs\":[[\"class\",\"action\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":30,\"id\":43,\"before\":null},"
+    "{\"op\":\"el\",\"id\":44,\"tag\":\"svg\",\"ns\":\"svg\",\"attrs\":[[\"viewBox\",\"0 0 24 24\"],[\"width\",\"18\"],[\"height\",\"18\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":43,\"id\":44,\"before\":null},"
+    "{\"op\":\"el\",\"id\":45,\"tag\":\"path\",\"ns\":\"svg\",\"attrs\":[[\"d\",\"M6 3 L18 3 L18 21 L12 16 L6 21 Z\"],[\"fill\",\"none\"],[\"stroke\",\"#6b7280\"],[\"stroke-width\",\"1.6\"]],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":44,\"id\":45,\"before\":null},"
+    "{\"op\":\"el\",\"id\":50,\"tag\":\"span\",\"attrs\":[],\"adopt\":\"body\"},"
+    "{\"op\":\"ins\",\"parent\":43,\"id\":50,\"before\":null},"
+    "{\"op\":\"text\",\"id\":46,\"data\":\"Save\"},"
+    "{\"op\":\"ins\",\"parent\":50,\"id\":46,\"before\":null},"
     /* A centered footer via text-align. */
     "{\"op\":\"el\",\"id\":22,\"tag\":\"p\",\"attrs\":[[\"class\",\"footer\"]],\"adopt\":\"body\"},"
     "{\"op\":\"ins\",\"parent\":2,\"id\":22,\"before\":null},"

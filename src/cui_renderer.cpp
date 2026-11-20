@@ -1,5 +1,7 @@
 #include "twidget/cui_renderer.h"
 
+#include "cui_svg.h"
+
 #include "twidget/json.h"
 
 #include <cui/cui.h>
@@ -221,6 +223,15 @@ struct Style {
         Ease ease = Ease::Ease;      // CSS default timing function
     };
     std::vector<TransitionSpec> transitions;
+    // SVG paint (inline-svg feature). fill/stroke are inherited; alpha 0 means
+    // "none" (SVG's default stroke; shapes get a black fill via UA defaults).
+    // The two opacities stay separate from the colors so a child inherits the
+    // parent's color and applies its own opacity on top (SVG 11).
+    Rgba fill{0, 0, 0, 0};
+    Rgba stroke{0, 0, 0, 0};
+    float fill_opacity = 1.f;
+    float stroke_opacity = 1.f;
+    double stroke_width = 1.0;
 };
 
 // One CSS declaration set (inline style, a rule's block, or the UA defaults).
@@ -578,6 +589,20 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
             else if (is("bottom")) st.bottom = x;
             else st.left = x;
         }
+    } else if (is("fill")) {
+        // SVG fill: a color, or "none" (= transparent). Inherited.
+        Rgba c; if (value == "none" || value == "transparent") st.fill = Rgba{0, 0, 0, 0};
+        else if (parseColor(value, c)) st.fill = c;
+    } else if (is("stroke")) {
+        // SVG stroke: a color, or "none" (= transparent, the SVG default). Inherited.
+        Rgba c; if (value == "none" || value == "transparent") st.stroke = Rgba{0, 0, 0, 0};
+        else if (parseColor(value, c)) st.stroke = c;
+    } else if (is("stroke-width")) {
+        double x; if (parseLenPx(value, x)) st.stroke_width = std::max(0.0, x);
+    } else if (is("fill-opacity")) {
+        st.fill_opacity = std::clamp((float)std::atof(value.c_str()), 0.f, 1.f);
+    } else if (is("stroke-opacity")) {
+        st.stroke_opacity = std::clamp((float)std::atof(value.c_str()), 0.f, 1.f);
     }
 }
 
@@ -893,6 +918,28 @@ void applyUaDefaults(Doc& d, Node& n) {
         s.bold = true; s.font_weight = 500;
     }
     else if (t == "br") { s.display = Display::Block; s.height = 0; }
+    // SVG paint defaults (SVG 1.1 initial values). Shape elements fill black and
+    // stroke none; the <svg> root paints no fill/stroke of its own (it is a
+    // viewport). CSS/presentation attrs override these in the cascade.
+    else if (n.svg) {
+        if (t == "svg") {
+            s.fill = {0, 0, 0, 0}; s.stroke = {0, 0, 0, 0};
+            // SVG replaced-element default size (SVG 7.2): 300x150 when neither
+            // width/height attrs nor CSS give a size. This is the box the viewBox
+            // maps into; without it the root would collapse to 0 height (its
+            // shape children are display:none) and nothing would paint.
+            s.width = 300; s.height = 150;
+            // A replaced element is a block-level box (CSS 9.2.1 / SVG). Without
+            // this the root lays out inline and its height never contributes to
+            // the parent, so the viewport collapses and nothing paints.
+            s.display = Display::Block;
+        }
+        else { s.fill = {0, 0, 0, 1}; s.stroke = {0, 0, 0, 0}; }   /* shape: fill #000, stroke none */
+        // SVG shapes are positioned by their own geometry (x/cx/d …) in the
+        // viewBox, not by block flow. Take them out of layout entirely;
+        // paintSvg walks them directly. The <svg> root stays a block box.
+        if (t != "svg" && t != "g" && t != "defs") s.display = Display::None;
+    }
     // CSS table model roles (CSS 17). The table layout pass walks these; painting
     // is the normal block/inline recursion once each cell has a position.
     else if (t == "table") { s.display = Display::Table; s.margin[0] = s.margin[2] = 0.6 * kDefaultFontSize; }
@@ -998,6 +1045,11 @@ void computeStyle(Doc& d, int64_t id) {
         // Group opacity accumulates down the tree (CSS 1-100): a faded container
         // fades its descendants multiplicatively.
         n.style.opacity = p->style.opacity;
+        // SVG fill and stroke are inherited properties (SVG 11): a shape inherits
+        // its parent's fill/stroke unless it sets its own. Opacities and
+        // stroke-width are NOT inherited (each element applies its own).
+        n.style.fill = p->style.fill;
+        n.style.stroke = p->style.stroke;
     }
     // Custom properties inherit parent->child (CSS 15.3). The parent's set is
     // already final here (computeStyleAll walks parent-before-child).
@@ -1009,6 +1061,20 @@ void computeStyle(Doc& d, int64_t id) {
     // custom_props first so a var() in any value can reference a --name declared
     // anywhere on the element (CSS resolves custom props before substituting).
     Decls all;
+    // SVG presentation attributes (SVG 1.1 §6.2) are author-level declarations
+    // with zero specificity: they override UA defaults but lose to any author CSS
+    // rule, which is why they are pushed first (applyDecl is last-write-wins).
+    // fill/stroke/opacity/stroke-width carry the paint; width/height size the
+    // <svg> root (on shapes they are geometry, read directly by the SVG pass).
+    if (n.svg)
+        for (const auto& a : n.attrs) {
+            const std::string& an = a.first;
+            bool pres = an == "fill" || an == "stroke" || an == "stroke-width"
+                     || an == "fill-opacity" || an == "stroke-opacity"
+                     || an == "opacity"
+                     || ((an == "width" || an == "height") && n.tag == "svg");
+            if (pres) all.kv.push_back({an, a.second});
+        }
     for (const Rule& r : d.sheet) {
         bool match = r.is_root ? (n.tag == "body")
                    : ((!r.tag.empty() && r.tag == n.tag) || (!r.cls.empty() && hasClass(n, r.cls))
@@ -1046,6 +1112,226 @@ void computeStyle(Doc& d, int64_t id) {
     // is resolved in relayout() against the root padding, honoring an explicit padding:0.
     if (n.tag != "body")
         for (double& p : n.style.pad) if (p < 0) p = 0;
+}
+
+// ───────────── SVG geometry (inline-svg feature) ─────────────
+// These translate a shape element's own attributes into cuiw_svg::Path geometry
+// in the viewBox's user coordinates. Fill/stroke come from the node's resolved
+// Style (the CSS cascade), not from parsing here, so presentation attributes and
+// stylesheets behave identically.
+
+// Splits "1,2 3,4,5,6" into pairs of doubles (polyline/polygon points).
+static void parsePointList(const std::string& v, std::vector<cuiw_svg::Pt>& out) {
+    std::vector<double> nums;
+    std::string cur;
+    auto commit = [&] {
+        if (cur.empty()) return;
+        char* end = nullptr;
+        double x = std::strtod(cur.c_str(), &end);
+        if (end != cur.c_str()) nums.push_back(x);
+        cur.clear();
+    };
+    for (char c : v) {
+        if (c == ',' || std::isspace((unsigned char)c)) commit();
+        else cur.push_back(c);
+    }
+    commit();
+    for (size_t i = 0; i + 1 < nums.size(); i += 2)
+        out.push_back(cuiw_svg::Pt{nums[i], nums[i + 1]});
+}
+
+// Appends an ellipse flattened to `seg` points around (cx,cy).
+static void appendEllipse(double cx, double cy, double rx, double ry,
+                          std::vector<cuiw_svg::Pt>& out) {
+    if (rx <= 0 || ry <= 0) return;
+    const int seg = 64;
+    for (int i = 0; i < seg; i++) {
+        double a = 2.0 * 3.14159265358979323846 * i / seg;
+        out.push_back(cuiw_svg::Pt{cx + rx * std::cos(a), cy + ry * std::sin(a)});
+    }
+}
+
+// Builds a rectangle outline, honouring rx/ry rounded corners.
+static void appendRect(double x, double y, double w, double h, double rx, double ry,
+                       std::vector<cuiw_svg::Pt>& out) {
+    if (w <= 0 || h <= 0) return;
+    if (rx <= 0 && ry <= 0) {
+        out.push_back({x, y});
+        out.push_back({x + w, y});
+        out.push_back({x + w, y + h});
+        out.push_back({x, y + h});
+        return;
+    }
+    // SVG 9.2: if only one of rx/ry is given, both equal it; clamp to half the side.
+    if (rx <= 0) rx = ry;
+    if (ry <= 0) ry = rx;
+    rx = std::min(rx, w / 2.0);
+    ry = std::min(ry, h / 2.0);
+    const int seg = 16;   // per corner
+    auto corner = [&](double cx, double cy, double a0) {
+        for (int i = 0; i <= seg; i++) {
+            double a = a0 + (3.14159265358979323846 / 2.0) * i / seg;
+            out.push_back({cx + rx * std::cos(a), cy + ry * std::sin(a)});
+        }
+    };
+    corner(x + w - rx, y + ry, 3.0 * 3.14159265358979323846 / 2.0);   // top-right
+    corner(x + w - rx, y + h - ry, 0.0);                              // bottom-right
+    corner(x + rx, y + h - ry, 3.14159265358979323846 / 2.0);         // bottom-left
+    corner(x + rx, y + ry, 3.14159265358979323846);                   // top-left
+}
+
+// Parses a <path d> supporting M/L/H/V/C/Q/Z (absolute + relative). Curves are
+// flattened to line segments; the arc (A) command is not modelled and is skipped.
+static bool parsePathData(const std::string& d, std::vector<cuiw_svg::Pt>& out,
+                          bool& closed) {
+    closed = false;
+    std::vector<cuiw_svg::Pt> pts;
+    double cx = 0, cy = 0;      // current point
+    double sx = 0, sy = 0;      // subpath start (for Z)
+    size_t i = 0;
+    auto number = [&](double& val) -> bool {
+        while (i < d.size() && (std::isspace((unsigned char)d[i]) || d[i] == ','))
+            if (d[i++] == ',') break;
+        // Skip separators but keep at least the scan position valid.
+        while (i < d.size() && (std::isspace((unsigned char)d[i]) || d[i] == ',')) i++;
+        if (i >= d.size()) return false;
+        char* end = nullptr;
+        val = std::strtod(d.c_str() + i, &end);
+        if (end == d.c_str() + i) return false;
+        i = (size_t)(end - d.c_str());
+        return true;
+    };
+    auto lineTo = [&](double x, double y) {
+        pts.push_back({x, y});
+        cx = x;
+        cy = y;
+    };
+    auto cubicTo = [&](double x1, double y1, double x2, double y2, double x, double y) {
+        const int seg = 16;   // flatten each cubic
+        for (int k = 1; k <= seg; k++) {
+            double t = (double)k / seg, u = 1 - t;
+            double bx = u * u * u * cx + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x;
+            double by = u * u * u * cy + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y;
+            pts.push_back({bx, by});
+        }
+        cx = x;
+        cy = y;
+    };
+    auto quadTo = [&](double x1, double y1, double x, double y) {
+        const int seg = 16;
+        for (int k = 1; k <= seg; k++) {
+            double t = (double)k / seg, u = 1 - t;
+            double bx = u * u * cx + 2 * u * t * x1 + t * t * x;
+            double by = u * u * cy + 2 * u * t * y1 + t * t * y;
+            pts.push_back({bx, by});
+        }
+        cx = x;
+        cy = y;
+    };
+    // The most recent command; repeated coordinate groups reuse it (SVG 9.3.4).
+    char cmd = 0;
+    while (i < d.size()) {
+        while (i < d.size() && std::isspace((unsigned char)d[i])) i++;
+        if (i >= d.size()) break;
+        char c = d[i];
+        if (std::isalpha((unsigned char)c)) {
+            cmd = c;
+            i++;
+        } else if (cmd == 'M' || cmd == 'm') {
+            // An implicit repeat of M becomes L (SVG 9.3.4).
+            cmd = (cmd == 'M') ? 'L' : 'l';
+        }
+        if (!cmd) return false;
+        double rel = (cmd >= 'a' && cmd <= 'z') ? 1.0 : 0.0;
+        char up = (char)std::toupper((unsigned char)cmd);
+        if (up == 'Z') {
+            // Close the subpath back to its start.
+            if (!pts.empty()) pts.push_back({sx, sy});
+            cx = sx;
+            cy = sy;
+            closed = true;
+            // Z is not followed by coordinates; the next token (if any) is a command.
+            continue;
+        }
+        if (up == 'M' || up == 'L') {
+            double x, y;
+            if (!number(x) || !number(y)) break;
+            x += rel * cx;
+            y += rel * cy;
+            lineTo(x, y);
+            if (up == 'M') { sx = x; sy = y; }
+        } else if (up == 'H') {
+            double x;
+            if (!number(x)) break;
+            lineTo(x + rel * cx, cy);
+        } else if (up == 'V') {
+            double y;
+            if (!number(y)) break;
+            lineTo(cx, y + rel * cy);
+        } else if (up == 'C') {
+            double x1, y1, x2, y2, x, y;
+            if (!number(x1) || !number(y1) || !number(x2) || !number(y2) || !number(x) || !number(y)) break;
+            cubicTo(x1 + rel * cx, y1 + rel * cy, x2 + rel * cx, y2 + rel * cy, x + rel * cx, y + rel * cy);
+        } else if (up == 'Q') {
+            double x1, y1, x, y;
+            if (!number(x1) || !number(y1) || !number(x) || !number(y)) break;
+            quadTo(x1 + rel * cx, y1 + rel * cy, x + rel * cx, y + rel * cy);
+        } else {
+            // Unsupported command (A, S, T) — stop rather than mis-parse.
+            break;
+        }
+    }
+    if (pts.size() < 2) return false;
+    out.insert(out.end(), pts.begin(), pts.end());
+    return true;
+}
+
+// Translates one shape element into geometry. Returns false for non-shapes
+// (<svg>, <g>, <defs>, unsupported) which paint nothing themselves.
+static bool svgShapeGeometry(const Node& n, cuiw_svg::Path& path) {
+    const std::string& t = n.tag;
+    path.closed = true;
+    path.stroke_width = n.style.stroke_width;
+    if (t == "rect") {
+        double x = std::atof(getAttr(n, "x").c_str());
+        double y = std::atof(getAttr(n, "y").c_str());
+        double w = std::atof(getAttr(n, "width").c_str());
+        double h = std::atof(getAttr(n, "height").c_str());
+        double rx = std::atof(getAttr(n, "rx").c_str());
+        double ry = std::atof(getAttr(n, "ry").c_str());
+        appendRect(x, y, w, h, rx, ry, path.pts);
+        return !path.pts.empty();
+    }
+    if (t == "circle") {
+        double cx = std::atof(getAttr(n, "cx").c_str());
+        double cy = std::atof(getAttr(n, "cy").c_str());
+        double r = std::atof(getAttr(n, "r").c_str());
+        appendEllipse(cx, cy, r, r, path.pts);
+        return !path.pts.empty();
+    }
+    if (t == "ellipse") {
+        appendEllipse(std::atof(getAttr(n, "cx").c_str()), std::atof(getAttr(n, "cy").c_str()),
+                      std::atof(getAttr(n, "rx").c_str()), std::atof(getAttr(n, "ry").c_str()),
+                      path.pts);
+        return !path.pts.empty();
+    }
+    if (t == "line") {
+        path.closed = false;
+        path.pts.push_back({std::atof(getAttr(n, "x1").c_str()), std::atof(getAttr(n, "y1").c_str())});
+        path.pts.push_back({std::atof(getAttr(n, "x2").c_str()), std::atof(getAttr(n, "y2").c_str())});
+        // A line only strokes; force no fill so it never paints a filled sliver.
+        path.fill = {0, 0, 0, 0};
+        return path.pts.size() == 2;
+    }
+    if (t == "polyline" || t == "polygon") {
+        path.closed = (t == "polygon");
+        parsePointList(getAttr(n, "points"), path.pts);
+        return path.pts.size() >= 2;
+    }
+    if (t == "path") {
+        return parsePathData(getAttr(n, "d"), path.pts, path.closed);
+    }
+    return false;
 }
 
 } // namespace
@@ -2000,10 +2286,59 @@ struct CuiRenderer::Impl {
                           (uint8_t)std::clamp(a * 255.f, 0.f, 255.f) };
     }
 
+    // Paints an <svg> subtree: map its viewBox into the element box and draw each
+    // shape child. Shape children carry display:none (set in applyUaDefaults), so
+    // the normal block recursion never places them — we read their own geometry
+    // here and return without recursing, which is what keeps them from being
+    // double-drawn or stacked vertically.
+    void paintSvg(int64_t id) {
+        Node& n = doc.nodes[id];
+        // The <svg> root's own fill/stroke are none by default; it is a viewport.
+        // Shapes resolve their paint from their own computed Style (which inherits
+        // fill/stroke down the tree), so we read each child's Style, not the root's.
+        cuiw_svg::Xform x;
+        if (!cuiw_svg::makeXform(getAttr(n, "viewBox").c_str(), n.x, n.y, n.w, n.h, x))
+            return;
+        cui_rect clip{(float)n.x, (float)n.y, (float)n.w, (float)n.h};
+        std::vector<cuiw_svg::Path> paths;
+        collectSvgShapes(id, paths);
+        cuiw_svg::paintPaths(ui, paths, x, clip);
+    }
+
+    // Depth-walks an SVG subtree turning shape elements into Path records. Group
+    // containers (<g>, <defs>, unknown) contribute nothing themselves but their
+    // children still inherit fill/stroke through the CSS cascade.
+    void collectSvgShapes(int64_t id, std::vector<cuiw_svg::Path>& paths) {
+        for (int64_t cid : doc.nodes[id].children) {
+            Node& c = doc.nodes[cid];
+            if (c.kind != Node::Element) continue;
+            if (c.tag != "g" && c.tag != "defs" && c.tag != "svg") {
+                cuiw_svg::Path p;
+                if (svgShapeGeometry(c, p)) {
+                    // Fill/stroke come from the resolved cascade; fold in the two
+                    // SVG opacities and the accumulated group opacity (CSS 1-100).
+                    p.fill = scaleRgba(c.style.fill, c.style.fill_opacity * c.style.opacity);
+                    p.stroke = scaleRgba(c.style.stroke, c.style.stroke_opacity * c.style.opacity);
+                    p.stroke_width = c.style.stroke_width;
+                    paths.push_back(std::move(p));
+                }
+            }
+            collectSvgShapes(cid, paths);
+        }
+    }
+
+    static cuiw_svg::Rgba scaleRgba(const Rgba& c, float a) {
+        return cuiw_svg::Rgba{c.r, c.g, c.b, c.a * std::clamp(a, 0.f, 1.f)};
+    }
+
     void paintNode(int64_t id) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) return;
         if (n.tag == "head" || !n.ever_rendered) { for (int64_t c : n.children) paintNode(c); return; }
+        // An <svg> viewport paints its whole subtree geometrically and must not
+        // fall through to the block/inline recursion (shape children carry
+        // display:none and are placed by the viewBox, not by layout).
+        if (n.tag == "svg") { paintSvg(id); return; }
         Style& s = n.style;
         // Draw in CSS logical points — cui_set_viewport(scale) scales them to
         // device px internally, so pre-multiplying here double-scales (the card
@@ -2100,7 +2435,10 @@ struct CuiRenderer::Impl {
             Node& n = doc.nodes[id];
             n.id = id; n.kind = Node::Element; n.tag = op["tag"].asString();
             for (char& c : n.tag) c = (char)std::tolower((unsigned char)c);
-            n.svg = op["ns"].asString() == "svg";
+            // An <svg> root carries no ns="svg" in real markup (only its shape
+            // children do), so recognize the viewport by tag too — otherwise it
+            // never gets UA size/display or presentation-attribute handling.
+            n.svg = op["ns"].asString() == "svg" || n.tag == "svg";
             n.ever_rendered = false;
             const Json& at = op["attrs"];
             if (at.isArray()) for (const Json& p : at.arr()) if (p.isArray() && p.size() >= 2)
