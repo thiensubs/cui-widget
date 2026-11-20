@@ -55,6 +55,29 @@ double polygonArea(const std::vector<Pt>& v) {
     return a * 0.5;
 }
 
+// True when every consecutive turn has the same sign — the polygon is convex and
+// can be handed to cui_draw_polygon as one shape. That matters for fill quality:
+// a circle/ellipse is a dense outline, and triangulating it into a fan means each
+// triangle is antialiased separately, so the shared interior edges accumulate
+// partial coverage from both sides and show up as faint radial seams. One convex
+// polygon has no interior edges, so it fills clean.
+bool isConvex(const std::vector<Pt>& v) {
+    if (v.size() < 4) return true;
+    int sign = 0;
+    const size_t n = v.size();
+    for (size_t i = 0; i < n; i++) {
+        const Pt& a = v[i];
+        const Pt& b = v[(i + 1) % n];
+        const Pt& c = v[(i + 2) % n];
+        double cr = cross(a, b, c);
+        if (std::fabs(cr) < 1e-12) continue;   // collinear — no turn, ignore
+        int s = cr > 0 ? 1 : -1;
+        if (sign == 0) sign = s;
+        else if (s != sign) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool makeXform(const char* viewBox, double dx, double dy, double dw, double dh,
@@ -140,17 +163,30 @@ void paintPaths(cui_ctx* ui, const std::vector<Path>& paths, const Xform& x,
                          static_cast<uint8_t>(std::clamp(p.fill.g * 255.f, 0.f, 255.f)),
                          static_cast<uint8_t>(std::clamp(p.fill.b * 255.f, 0.f, 255.f)),
                          static_cast<uint8_t>(std::clamp(p.fill.a * 255.f, 0.f, 255.f))};
-            std::vector<Pt> tris = triangulate(p.pts);
-            // Each ear-clip triangle is its own (convex) polygon — cui_draw_polygon
-            // tessellates a single polygon's vertices, so handing it every triangle
-            // concatenated would build one bogus overlapping shape.
-            std::vector<cui_vec2> tri(3);
-            for (size_t i = 0; i + 2 < tris.size(); i += 3) {
-                for (int k = 0; k < 3; k++) {
-                    Pt t = apply(x, tris[i + k]);
-                    tri[k] = cui_vec2{(float)t.x, (float)t.y};
+            std::vector<Pt> dv;
+            dv.reserve(p.pts.size());
+            for (const Pt& t : p.pts) dv.push_back(apply(x, t));
+            if (isConvex(dv)) {
+                // One convex polygon — no interior edges, so no radial AA seams
+                // (the fan-triangulation seams a circle/ellipse otherwise shows).
+                std::vector<cui_vec2> poly(dv.size());
+                for (size_t k = 0; k < dv.size(); k++)
+                    poly[k] = cui_vec2{(float)dv[k].x, (float)dv[k].y};
+                cui_draw_polygon(ui, poly.data(), (int)poly.size(), fc);
+            } else {
+                // Concave: ear-clip, then each triangle is its own (convex)
+                // polygon — cui_draw_polygon tessellates a single polygon's
+                // vertices, so concatenating every triangle would build one
+                // bogus overlapping shape.
+                std::vector<Pt> tris = triangulate(p.pts);
+                std::vector<cui_vec2> tri(3);
+                for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+                    for (int k = 0; k < 3; k++) {
+                        Pt t = apply(x, tris[i + k]);
+                        tri[k] = cui_vec2{(float)t.x, (float)t.y};
+                    }
+                    cui_draw_polygon(ui, tri.data(), 3, fc);
                 }
-                cui_draw_polygon(ui, tri.data(), 3, fc);
             }
         }
         if (p.stroke.a > 0 && p.pts.size() >= 2) {
