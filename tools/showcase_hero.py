@@ -65,14 +65,17 @@ class Doc:
         return self.el("svg", [["class", cls], ["viewBox", f"0 0 {vb} {vb}"],
                                ["width", str(w)], ["height", str(h)]], parent, ns="svg")
 
-    def icon(self, parent, path_d, color, size=18, vb=24, sw=2.0):
-        """A single-path stroke icon (Feather-style), recoloured from a token."""
+    def icon(self, parent, path_d, color, size=22, vb=24, sw=2.0):
+        """A single-path stroke icon (Feather-style). fill/stroke must ride in a
+        style ATTRIBUTE: collectSvgShapes paints each shape from its
+        cascade-resolved style, and presentation attributes (stroke="…") are not
+        wired into that cascade — only inline style is."""
         s = self.el("svg", [["width", str(size)], ["height", str(size)],
-                            ["viewBox", f"0 0 {vb} {vb}"], ["fill", "none"],
-                            ["stroke", color], ["stroke-width", str(sw)],
-                            ["stroke-linecap", "round"],
-                            ["stroke-linejoin", "round"]], parent, ns="svg")
-        self.el("path", [["d", path_d]], s)
+                            ["viewBox", f"0 0 {vb} {vb}"]], parent, ns="svg")
+        self.el("path", [["d", path_d],
+                         ["style", "fill:none;stroke:%s;stroke-width:%s;"
+                                   "stroke-linecap:round;stroke-linejoin:round"
+                                   % (color, sw)]], s)
         return s
 
 

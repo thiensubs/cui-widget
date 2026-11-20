@@ -46,6 +46,17 @@ is never hand-counting layout again — and a screen you can actually test.
 
 ## What it looks like
 
+Here is a **revenue hero** — the clearest picture of what the brain adds over a
+raw brush. One gradient card carries a big metric, a delta pill and a sparkline;
+three KPI cards sit below with vector icons; a smooth area chart and a live
+activity feed finish it. Every colour, spacing, radius and type size comes from
+one block of design tokens.
+
+![An analytics hero: a gradient card with a big revenue metric and sparkline, three KPI cards with vector icons, a smooth area chart, and a live activity feed](docs/showcase_hero.png)
+
+Build it with `python3 tools/showcase_hero.py > docs/showcase_hero.json &&
+./build/cuiw-render docs/showcase_hero.json docs/showcase_hero.png 400 2 dark`.
+
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
 Here is a little **3D scene** built with it. The screen is flat, but we tilt the
