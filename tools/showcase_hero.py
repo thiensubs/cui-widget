@@ -66,11 +66,17 @@ class Doc:
                                ["width", str(w)], ["height", str(h)]], parent, ns="svg")
 
     def icon(self, parent, path_d, color, size=22, vb=24, sw=2.0):
-        """A single-path stroke icon (Feather-style). fill/stroke must ride in a
-        style ATTRIBUTE: collectSvgShapes paints each shape from its
-        cascade-resolved style, and presentation attributes (stroke="…") are not
-        wired into that cascade — only inline style is."""
-        s = self.el("svg", [["width", str(size)], ["height", str(size)],
+        """A single-path stroke icon (Feather-style).
+
+        Two engine gotchas, both worked around here:
+          * fill/stroke must ride in a style ATTRIBUTE -- collectSvgShapes paints
+            each shape from its cascade-resolved style and does not read
+            presentation attrs (stroke="...") off the shape.
+          * the <svg> root does NOT apply width/height ATTRIBUTES as its box size
+            (they fall back to the 300x150 replaced-element default), so size the
+            root with an inline style, not width=/height= attributes.
+        """
+        s = self.el("svg", [["style", "width:%spx;height:%spx" % (size, size)],
                             ["viewBox", f"0 0 {vb} {vb}"]], parent, ns="svg")
         self.el("path", [["d", path_d],
                          ["style", "fill:none;stroke:%s;stroke-width:%s;"
@@ -110,7 +116,7 @@ body{margin:0;padding:var(--s4);background:var(--bg);color:var(--ink);
   margin-bottom:var(--s3)}
 .kpi{background:var(--surface);border-radius:var(--r-md);padding:var(--s3);
   box-shadow:var(--shadow-sm)}
-.kico{width:30px;height:30px;border-radius:var(--r-sm);display:flex;
+.kico{width:34px;height:34px;border-radius:var(--r-sm);display:flex;
   align-items:center;justify-content:center;margin-bottom:var(--s2)}
 .klabel{font-size:var(--t-xs);color:var(--ink-faint);margin-bottom:var(--s1)}
 .kval{font-size:var(--t-lg);font-weight:700;color:var(--ink)}
@@ -141,7 +147,7 @@ def build(d):
     d.div("hero-label", top, "Total revenue")
     # delta pill with an up-trend icon
     pill = d.el("div", [["class", "pill"]], top)
-    d.icon(pill, ICONS["trend"], "#ffffff", size=12, sw=2.5)
+    d.icon(pill, ICONS["trend"], "#ffffff", size=14, sw=2.5)
     t = d.nid()
     d.ops.append({"op": "text", "id": t, "data": "12.4%"})
     d.ops.append({"op": "ins", "parent": pill, "id": t, "before": None})
@@ -173,7 +179,7 @@ def build(d):
         card = d.div("kpi", kpis, style=f"animation:rise .5s ease-out "
                                          f"both;animation-delay:{delay}s")
         tile = d.div("kico", card, style=f"background:{tint}")
-        d.icon(tile, ICONS[icd], icol, size=22, sw=2.0)
+        d.icon(tile, ICONS[icd], icol, size=26, sw=2.0)
         d.div("klabel", card, label)
         d.div("kval", card, val)
         kr = d.div("kdelta " + dcls, card)
