@@ -105,6 +105,18 @@ jobs:
           if [ -f build/cuiw-transitions ]; then T=build/cuiw-transitions; else T=build/cuiw-transitions.exe; fi
           "$T"
 
+      # The capability self-checks: each drives one feature headless and asserts
+      # painted pixels, so a silent regression fails the build on every OS.
+      - name: Run the capability self-checks
+        shell: bash
+        run: |
+          set -e
+          for t in canvas canvas-xform keyframes gradients images svgtext scroll; do
+            if [ -f "build/cuiw-$t" ]; then B="build/cuiw-$t"; else B="build/cuiw-$t.exe"; fi
+            echo "== $t =="
+            "$B"
+          done
+
       - name: Render the reference widget app
         shell: bash
         run: |

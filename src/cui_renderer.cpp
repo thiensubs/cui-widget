@@ -1161,7 +1161,8 @@ struct CanvasCmd {
         FillStyle, StrokeStyle, LineWidth, GlobalAlpha,
         FillRect, ClearRect, StrokeRect,
         BeginPath, MoveTo, LineTo, Rect, Arc, ClosePath, Fill, Stroke,
-        FillText, DrawImage
+        FillText, DrawImage,
+        Save, Restore, Translate, Rotate, Scale, SetTransform, ResetTransform, Clip
     };
     Kind kind;
     double a[6] = {0, 0, 0, 0, 0, 0};
@@ -2951,6 +2952,24 @@ struct CuiRenderer::Impl {
         // one path across many commands, then fill()/stroke() paint it all.
         std::vector<std::vector<cuiw_svg::Pt>> subpaths;
         bool cur_closed = false;
+        // The 2D-context transform: a 2x3 affine matrix [a b c d e f] mapping
+        // user coords to canvas coords, plus a stack for save()/restore(). Points
+        // are mapped when they enter a path (or an anchor), so every draw op
+        // honours the transform without a second code path.
+        struct Mat { double a=1,b=0,c=0,d=1,e=0,f=0; int clip_depth=0; cui_rect clip{}; };
+        Mat m;
+        std::vector<Mat> mat_stack;
+        // How many clip regions this canvas has pushed via clip() (each popped by
+        // a matching restore, or by the cleanup below).
+        int clip_depth = 0;
+        auto xformPt = [&](double x, double y) {
+            return cuiw_svg::Pt{ m.a*x + m.c*y + m.e, m.b*x + m.d*y + m.f };
+        };
+        // Append a point to a subpath in CANVAS space (matrix applied). All path
+        // construction goes through these so the transform is honoured.
+        auto pushPt = [&](std::vector<cuiw_svg::Pt>& sp, double x, double y) {
+            sp.push_back(xformPt(x, y));
+        };
         auto new_subpath = [&]() {
             subpaths.emplace_back();
             cur_closed = false;
@@ -2986,6 +3005,7 @@ struct CuiRenderer::Impl {
                 case CanvasCmd::FillRect: {
                     std::vector<cuiw_svg::Pt> r;
                     appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    for (auto& p : r) p = xformPt(p.x, p.y);
                     paint_poly(r, true, true, false);
                     break;
                 }
@@ -2997,6 +3017,7 @@ struct CuiRenderer::Impl {
                     if (bg.a <= 0) break;
                     std::vector<cuiw_svg::Pt> r;
                     appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    for (auto& p : r) p = xformPt(p.x, p.y);
                     cuiw_svg::Path p;
                     p.pts = r; p.closed = true; p.stroke = {0, 0, 0, 0};
                     p.fill = scaleRgba(bg, (float)galpha);
@@ -3006,6 +3027,7 @@ struct CuiRenderer::Impl {
                 case CanvasCmd::StrokeRect: {
                     std::vector<cuiw_svg::Pt> r;
                     appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    for (auto& p : r) p = xformPt(p.x, p.y);
                     paint_poly(r, true, false, true);
                     break;
                 }
@@ -3016,15 +3038,17 @@ struct CuiRenderer::Impl {
                 case CanvasCmd::MoveTo:
                     // A moveTo after drawing starts a new, unconnected subpath.
                     if (!subpaths.back().empty()) new_subpath();
-                    subpaths.back().push_back({c.a[0], c.a[1]});
+                    pushPt(subpaths.back(), c.a[0], c.a[1]);
                     break;
                 case CanvasCmd::LineTo:
-                    subpaths.back().push_back({c.a[0], c.a[1]});
+                    pushPt(subpaths.back(), c.a[0], c.a[1]);
                     break;
                 case CanvasCmd::Rect: {
                     // rect() adds a closed rectangular subpath.
                     if (!subpaths.back().empty()) new_subpath();
-                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, subpaths.back());
+                    std::vector<cuiw_svg::Pt> r;
+                    appendRect(c.a[0], c.a[1], c.a[2], c.a[3], 0, 0, r);
+                    for (const auto& p : r) subpaths.back().push_back(xformPt(p.x, p.y));
                     cur_closed = true;
                     new_subpath();
                     break;
@@ -3043,7 +3067,7 @@ struct CuiRenderer::Impl {
                     if (!subpaths.back().empty()) new_subpath();
                     for (int i = 0; i <= steps; i++) {
                         double a = a0 + sweep * (double)i / (double)steps;
-                        subpaths.back().push_back({cx + rad * std::cos(a), cy + rad * std::sin(a)});
+                        pushPt(subpaths.back(), cx + rad * std::cos(a), cy + rad * std::sin(a));
                     }
                     cur_closed = full;
                     if (full) new_subpath();   // a full circle is its own subpath
@@ -3059,12 +3083,76 @@ struct CuiRenderer::Impl {
                 case CanvasCmd::Stroke:
                     for (auto& sp : subpaths) paint_poly(sp, cur_closed, false, true);
                     break;
+                case CanvasCmd::Save:
+                    m.clip_depth = clip_depth;
+                    m.clip = clip;
+                    mat_stack.push_back(m);
+                    break;
+                case CanvasCmd::Restore:
+                    if (!mat_stack.empty()) {
+                        // Rewind the clip to where save() found it: pop every
+                        // clip region pushed since then (canvas save/restore
+                        // captures the clip as well as the transform).
+                        while (clip_depth > mat_stack.back().clip_depth) {
+                            cui_pop_clip(ui);
+                            clip_depth--;
+                        }
+                        // The clip rect itself is part of the saved state: the
+                        // Clip case mutates it, so restore() must put it back
+                        // or everything drawn later stays stuck in the band.
+                        clip = mat_stack.back().clip;
+                        m = mat_stack.back();
+                        mat_stack.pop_back();
+                    }
+                    break;
+                case CanvasCmd::Translate:
+                    // Post-multiply: the new translation is in the current user
+                    // space, so it lands at (e,f) after the existing matrix.
+                    m.e += m.a * c.a[0] + m.c * c.a[1];
+                    m.f += m.b * c.a[0] + m.d * c.a[1];
+                    break;
+                case CanvasCmd::Rotate: {
+                    double co = std::cos(c.a[0]), si = std::sin(c.a[0]);
+                    double a = m.a, b = m.b, cc = m.c, d = m.d;
+                    m.a = a * co + cc * si;  m.b = b * co + d * si;
+                    m.c = cc * co - a * si;  m.d = d * co - b * si;
+                    break;
+                }
+                case CanvasCmd::Scale:
+                    m.a *= c.a[0]; m.b *= c.a[0];
+                    m.c *= c.a[1]; m.d *= c.a[1];
+                    break;
+                case CanvasCmd::SetTransform:
+                    m = { c.a[0], c.a[1], c.a[2], c.a[3], c.a[4], c.a[5] };
+                    break;
+                case CanvasCmd::ResetTransform:
+                    m = {};
+                    break;
+                case CanvasCmd::Clip: {
+                    // Intersect the current clip with the path's bounding box
+                    // (axis-aligned; a rotated clip region degrades to its bbox).
+                    double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+                    for (const auto& sp : subpaths)
+                        for (const auto& p : sp) {
+                            x0 = std::min(x0, p.x); y0 = std::min(y0, p.y);
+                            x1 = std::max(x1, p.x); y1 = std::max(y1, p.y);
+                        }
+                    if (x0 > x1 || y0 > y1) break;
+                    clip.x = (float)std::max((double)clip.x, ox + x0);
+                    clip.y = (float)std::max((double)clip.y, oy + y0);
+                    clip.w = (float)std::min((double)clip.x + clip.w, ox + x1) - clip.x;
+                    clip.h = (float)std::min((double)clip.y + clip.h, oy + y1) - clip.y;
+                    cui_push_clip(ui, clip);
+                    clip_depth++;
+                    break;
+                }
                 case CanvasCmd::FillText:
                     if (!c.text.empty()) {
                         cui_color col = paintColor(fill_col, (float)galpha);
+                        cui_vec2 at{ (float)(ox + m.a*c.a[0] + m.c*c.a[1] + m.e),
+                                     (float)(oy + m.b*c.a[0] + m.d*c.a[1] + m.f) };
                         cui_draw_text(ui, fontFor(n.style), (float)n.style.font_size,
-                                      cui_vec2{ (float)(ox + c.a[0]), (float)(oy + c.a[1]) },
-                                      col, c.text.c_str(), -1);
+                                      at, col, c.text.c_str(), -1);
                     }
                     break;
                 case CanvasCmd::DrawImage: {
@@ -3079,14 +3167,21 @@ struct CuiRenderer::Impl {
                     if (iar > bar) { dh = bh; dw = bh * iar; }
                     else { dw = bw; dh = bw / iar; }
                     double dx = c.a[0] + (bw - dw) / 2.0, dy = c.a[1] + (bh - dh) / 2.0;
-                    cui_rect dst{(float)(ox + dx), (float)(oy + dy), (float)dw, (float)dh};
+                    // Map the dest rect through the current transform (an
+                    // axis-aligned image under a rotation lands in its bbox).
+                    cuiw_svg::Pt tl = xformPt(dx, dy), br = xformPt(dx + dw, dy + dh);
+                    cui_rect dst{(float)(ox + std::min(tl.x, br.x)),
+                                 (float)(oy + std::min(tl.y, br.y)),
+                                 (float)std::abs(br.x - tl.x), (float)std::abs(br.y - tl.y)};
                     cui_draw_image(ui, tex, dst, cui_rect{0, 0, 1, 1},
                                    CUI_CORNERS(0), CUI_TRANSPARENT);
                     break;
                 }
             }
         }
-        cui_pop_clip(ui);
+        // Pop every clip this canvas pushed (the element box clip plus any
+        // remaining clip() regions not unwound by restore()).
+        for (int i = 0; i <= clip_depth; i++) cui_pop_clip(ui);
     }
 
     // Paints an <img>: decode its data: URL once into RGBA pixels, upload to a
@@ -3403,6 +3498,27 @@ struct CuiRenderer::Impl {
             cc.a[0] = num(2); cc.a[1] = num(3); cc.a[2] = num(4); cc.a[3] = num(5);
             return !cc.text.empty();
         }
+        // Transforms. rotate takes degrees in the ops JSON (more readable than
+        // radians for authored widgets); the rest are the raw canvas args.
+        if (name == "save") { cc.kind = CanvasCmd::Save; return true; }
+        if (name == "restore") { cc.kind = CanvasCmd::Restore; return true; }
+        if (name == "translate") {
+            cc.kind = CanvasCmd::Translate; cc.a[0] = num(1); cc.a[1] = num(2); return true;
+        }
+        if (name == "rotate") {
+            cc.kind = CanvasCmd::Rotate;
+            cc.a[0] = num(1) * 3.14159265358979 / 180.0; return true;
+        }
+        if (name == "scale") {
+            cc.kind = CanvasCmd::Scale; cc.a[0] = num(1); cc.a[1] = num(2); return true;
+        }
+        if (name == "setTransform") {
+            cc.kind = CanvasCmd::SetTransform;
+            for (int i = 0; i < 6; i++) cc.a[i] = num(i + 1);
+            return true;
+        }
+        if (name == "resetTransform") { cc.kind = CanvasCmd::ResetTransform; return true; }
+        if (name == "clip") { cc.kind = CanvasCmd::Clip; return true; }
         return false;
     }
 
