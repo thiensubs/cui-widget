@@ -83,8 +83,9 @@ adds. Look at what is doing the work:
 - The **event log** scrolls (`overflow:scroll`) — content taller than its box.
 - The **service tags** wrap on their own (`display:flex;flex-wrap:wrap`) — add a
   tag and the row re-flows. Nothing was positioned by hand.
-- Every card drops a soft **shadow** and reads its colours from one `:root`
-  block of **CSS variables**.
+- Every card drops a soft **shadow** and reads its colours, spacing, type scale and
+  radii from one `:root` block of **design tokens** (`tools/tokens.py`) — change a
+  token and every showcase updates together.
 
 Build it with `python3 tools/showcase_dashboard.py > docs/showcase_dashboard.json &&
 ./build/cuiw-render docs/showcase_dashboard.json docs/showcase_dashboard.png 380 2 dark`.
