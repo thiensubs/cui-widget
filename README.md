@@ -1,56 +1,50 @@
 # libcui-widget
 
-A standalone C library that renders a **widget document** into pixels, painting
-through CUI's software rasterizer. It is the "extra handle" on top of CUI: CUI
-supplies the drawing primitives (rects, borders, text, the rasterizer); libcui-widget
-supplies the widget layer above it — a DOM tree, CSS cascade and layout,
-hit-testing and pointer events.
+This is a toolbox that turns a **description of a screen** into a picture you can
+actually see. You tell it what should be on the screen (a button here, a title
+there, some colors), and it draws it for you, pixel by pixel.
 
-It speaks the **same RenderOps document contract** the Telegram widget host
-speaks. An application that already drives CUI can embed this library and render
-widgets itself, with **no ceiling but the host's own resources**.
+It is the "extra handle" on top of CUI. Think of it like a kitchen: CUI gives you
+the basic tools (a brush, a knife, a pan — the things that draw lines, boxes, and
+text). libcui-widget is the recipe book on top: it reads your instructions,
+decides where everything goes, and tells the tools what to paint.
+
+It speaks the **same instructions** the Telegram widget host speaks. So if you
+already have an app that uses CUI, you can drop this in and draw widgets yourself.
 
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
-A pipeline **diorama**: because the engine is a 2D rasterizer, the 3D look is
-computed as isometric polygons — four stages (source → build → test → deploy)
-with dashed flow arrows, every shape a 2D vector. The same scene **animated**: a
-stream of glowing packets flows along each arc, driven by a CSS `@keyframes`
-opacity animation with a staggered `animation-delay` per packet, so the bright
-point sweeps source → deploy. CUI itself only writes PNG (`cui_write_png`), so
-export goes one level up — `tools/flow-gif.sh` renders a deterministic frame
-sequence with `cuiw-render` and encodes it with ffmpeg (two-pass palette for an
-accurate GIF, plus H.264 mp4):
+Here is a little **3D scene** built with it. The screen is flat, but we tilt the
+shapes so they *look* 3D — like a board game seen from above. There are four
+steps: source → build → test → deploy. And it **moves**: little glowing dots
+travel from one step to the next, like food going down an assembly line.
 
 ![An isometric pipeline diorama whose packet stream is animated with @keyframes](docs/flow.gif)
 
-Regenerate: the still diorama with `python3 tools/diorama.py > docs/diorama.json
-&& ./build/cuiw-render docs/diorama.json docs/diorama.png 620 2 dark`; the
-animation with `python3 tools/flow.py > docs/flow.json && ./tools/flow-gif.sh`
-(→ `docs/flow.gif` + `docs/flow.mp4`). `cuiw-render` also emits any animation as
-a numbered PNG sequence for external encoding:
-`./build/cuiw-render docs/flow.json 'frames/%04d.png' 620 2 dark 0 72 30`.
+You can save that moving scene as a GIF or a video to share. The drawing library
+itself only saves still pictures (PNG), so a small script (`tools/flow-gif.sh`)
+takes a bunch of still frames and stitches them into a GIF and a video for you.
 
-Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
-`cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget
-paint, and draws through libcui's rasterizer.
+## No hidden roommates
 
-## Isolation
+This toolbox **only needs CUI and the normal C/C++ tools**. There is no hidden
+helper doing secret work: no JavaScript engine, no network, no web browser tucked
+inside, no limits on how big or small your screen can be. You are in charge.
 
-libcui-widget **links only libcui and the C/C++ runtime** — no QuickJS, no spec
-validator, no CPU/memory caps, no network, no WebView. The trusted host drives
-everything and owns the document. `examples/render_png.c` proves it: a full
-widget → PNG over the C ABI alone, and `nm` over the binary shows **zero**
-sandbox symbols (`quickjs`, `JS_*`, `validator`, `tw_*`, …). Run it:
+There is a file, `examples/render_png.c`, that proves it: it draws a whole widget
+using nothing but the plain C functions. You can check the finished program and
+see it has no hidden helpers inside. Run it:
 `./build/cuiw-render "" cuiw-render.png`.
 
-Trade-off, stated plainly: because there is no sandbox, **the host is trusted**.
-This library assumes the RenderOps come from a source you already trust.
+One honest trade-off: because there is no safety net, **you are trusted**. This
+library assumes the instructions you feed it come from somewhere you already
+trust.
 
 ## Build
 
-Requires CMake ≥ 3.20, a C++20 compiler, and a **built** CUI checkout
-(`build/libcui.a`). macOS frameworks are linked for you.
+You need three things: CMake (3.20 or newer), a C++20 compiler, and a **built**
+copy of CUI (look for `build/libcui.a`). On a Mac, the extra Apple bits are
+hooked up for you.
 
 ```sh
 # CUI_ROOT defaults to ../CUI/vendor/CUI; override with -DCUI_ROOT=/path/to/CUI
@@ -58,17 +52,18 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-| artifact | what it is |
+| what you get | what it is |
 | --- | --- |
-| `build/libcui-widget.a` | the static library |
-| `build/cuiw-render` | isolation-proof PNG example |
-| `build/cuiw-probe` | pixel probe (edge scan) |
+| `build/libcui-widget.a` | the toolbox, ready to use |
+| `build/cuiw-render` | a small program that draws a widget to a picture |
+| `build/cuiw-probe` | a helper that checks pixels along an edge |
 
-## Drop-in (amalgamation)
+## Carry it with you (just a few files)
 
-Like CUI ("two files"), this library drops in: `python3 tools/amalgamate.py`
-emits `cuiw.h` + `cuiw.cpp`. Put **four** files in one directory (`cui.h cui.c`
-are CUI's) and compile:
+Like CUI, you can carry this around as a handful of files instead of a big
+project. Run `python3 tools/amalgamate.py` and it hands you two files:
+`cuiw.h` and `cuiw.cpp`. Put **four** files in one folder (two of them, `cui.h`
+and `cui.c`, belong to CUI) and build:
 
 ```sh
 clang -std=c99 -O2 -I. -DCUI_NO_APP -c cui.c -o cui.o        # CUI once, as C
@@ -76,38 +71,37 @@ clang++ -std=c++20 -O2 -I. -DCUI_DROPIN -c cuiw.cpp -o cuiw.o
 clang++ -std=c++20 -O2 -I. -DCUI_DROPIN my_app.cpp cuiw.o cui.o -o my_app
 ```
 
-`-DCUI_NO_APP` drops CUI's window layer (correct headless, and on macOS compile
-`cui.c` as C — Cocoa headers break under ObjC). Renders a PNG **byte-identical**
-to the CMake build. Honest line: *"four files, two of them CUI's, needs C++20"* —
-**not** "no dependencies."
+The picture it draws is **exactly the same**, byte for byte, as the big-project
+build. Honest line: *"four files, two of them CUI's, needs C++20"* — **not** "no
+dependencies."
 
 ## Using it (C ABI — `include/cuiw.h`)
 
 ```c
 #include "cuiw.h"
 
-cuiw_renderer_t r = cuiw_create("dark", 400.0, 2.0);   // theme, width_css, dpr
-cuiw_send(r, "{\"type\":\"ops\",\"ops\":[...]}");       // build the document
-cuiw_frame f = cuiw_paint(r);                          // rasterize now
-// f.rgba is premultiplied RGBA8, f.width×f.height physical px
+cuiw_renderer_t r = cuiw_create("dark", 400.0, 2.0);   // dark or light, width, sharpness
+cuiw_send(r, "{\"type\":\"ops\",\"ops\":[...]}");       // here is what to draw
+cuiw_frame f = cuiw_paint(r);                          // draw it now
+// f.rgba is the picture, f.width×f.height are its size in pixels
 cuiw_frame_free(&f);
-cuiw_click(r, 120.0, 300.0);                           // pointer in CSS px
+cuiw_click(r, 120.0, 300.0);                           // someone tapped here
 cuiw_destroy(r);
 ```
 
-- **Ownership** — `cuiw_paint` hands you a frame you own → `cuiw_frame_free`.
-  Strings in are borrowed; strings out are valid until the next call.
-- **Threads** — calls on a handle are serialized by an internal mutex. The
-  optional frame clock runs on its own thread; copy what you need in the callback.
-- **Capabilities are queryable** — call `cuiw_has_feature` rather than assuming.
-  Unsupported features **degrade gracefully**, never silently mis-render.
+- **Who owns the picture** — `cuiw_paint` gives you a picture and you clean it up
+  with `cuiw_frame_free`.
+- **Doing many things at once** — if several parts of your app use the same
+  toolbox at once, it takes turns so they don't trip over each other.
+- **Ask what it can do** — call `cuiw_has_feature` instead of guessing. If it
+  can't do something, it skips it safely instead of drawing it wrong.
 
-## Pixel-regression gate
+## A guard against mistakes
 
-`examples/app/widget_app.c` renders a representative widget headless to a light
-and a dark PNG. `tools/pxdiff.c` compares the fresh render against committed
-goldens **pixel by pixel** and exits non-zero on any difference, so a layout or
-paint regression fails the build instead of shipping.
+There is a test that draws a sample widget and compares it, pixel by pixel, to a
+saved "good" picture. If even one pixel changes, the test fails. That way, if a
+change accidentally breaks how something looks, you find out right away — not
+after it ships.
 
 ```sh
 cmake --build build --target widget-app pxdiff
@@ -116,47 +110,42 @@ cmake --build build --target widget-app pxdiff
 # pixels 473040   differing 0 (0.0000%)   max channel delta 0   tol 0   PASS
 ```
 
-The render is **deterministic** — CUI's vendored `stb_truetype` plus
-byte-identical bundled fonts plus a static document — so **one set of goldens
-gates every platform**. `.github/workflows/ci.yml` runs the gate on
-`ubuntu-24.04` (gcc + clang), `macos-latest` and `windows-2022` (MSVC) on every
-push. A deliberate change is a **deliberate golden update**: regenerate with
-`./build/widget-app tests/golden` and commit the images with the code change.
+The drawing is **the same every time** — same letters, same fonts, same
+everything — so one saved "good" picture works on every computer. A test runs on
+Linux, Mac, and Windows on every change. If you *mean* to change how something
+looks, you re-save the good picture on purpose and commit it with your change.
 
-## Capabilities
+## What it can draw
 
-A **block + flexbox subset** of CSS — **27 of 27** tracked features, so nothing
-in the validated profile degrades: block & flex layout (incl. flex-wrap), grid,
-tables, floats, inline layout, percent width & height, `position: absolute`,
-`overflow: hidden` clipping, id/class/tag selectors, structural pseudo-classes,
-media queries, CSS variables, `border-radius`, `text-align`, `font-weight`,
-`vertical-align`, `text-decoration`, opacity compositing, transitions, inline
-SVG, `@keyframes` animations, and `<canvas>` 2D-context commands.
+It understands a big, useful slice of CSS — **27 of 27** things we track, so
+nothing on the list is missing. You can lay things out in rows and columns, make
+grids and tables, float things, set sizes as percentages, pin things in place,
+round corners, color and style text, fade things in and out, draw little vector
+icons, animate things, and even draw freehand into a box.
 
-Full per-feature table, including what each one models and what it does not:
+The full list, with what each one does and doesn't cover:
 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
-> **Honest limitation.** This is a subset engine, not a browser layout engine.
-> Documents leaning on unsupported features lay out differently than in the
-> sandboxed host. Query the matrix and design within it.
+> **Honest limitation.** This is not a full web browser. If a design leans on
+> something it can't do, it will look different than in a real browser. Ask it
+> what it can do, and design inside that.
 
-## Layout
+## Where things live
 
-| path | role |
+| path | what it is |
 | --- | --- |
-| `include/cuiw.h` | the public C ABI — the only header an app includes |
-| `include/twidget/*.h` | internal seam headers (stdlib-only) |
-| `src/cuiw.cpp` | the C ABI implementation over the renderer |
-| `src/cui_renderer.cpp` | document → CSS → layout → paint, through libcui |
-| `examples/render_png.c` | isolation proof: full widget → PNG, C ABI only |
-| `examples/app/widget_app.c` | the reference app: exercises every supported feature |
-| `tools/pxdiff.c` | pixel-by-pixel regression gate |
-| `tools/amalgamate.py` | emits the drop-in `cuiw.h` + `cuiw.cpp` pair |
-| `tests/golden/*.png` | committed goldens the CI gate compares against |
+| `include/cuiw.h` | the public functions — the only file an app includes |
+| `include/twidget/*.h` | internal headers |
+| `src/cuiw.cpp` | the public functions, built on the renderer |
+| `src/cui_renderer.cpp` | reads the instructions, decides layout, paints |
+| `examples/render_png.c` | proof it works with plain C functions only |
+| `examples/app/widget_app.c` | a sample app that uses every feature |
+| `tools/pxdiff.c` | the pixel-by-pixel test |
+| `tools/amalgamate.py` | makes the carry-it-with-you files |
+| `tests/golden/*.png` | the saved "good" pictures the test compares against |
 
 ## Status
 
-Version `0.1.0`, built against CUI `1.4.0` (`cuiw_cui_version()` reads CUI's own
-version string, so it can never drift). Builds clean on Linux (gcc, clang),
-macOS and Windows (MSVC); the pixel gate passes byte-exact against golden and
-correctly fails on a change.
+Version `0.1.0`, built against CUI `1.4.0` (it reads CUI's own version, so it
+never gets out of step). Builds clean on Linux, macOS, and Windows; the picture
+test matches exactly and correctly fails when something changes.
