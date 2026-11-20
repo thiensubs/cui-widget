@@ -162,12 +162,38 @@ std::string trimCopy(const std::string& s) {
 // [0,1]: a stop may carry an explicit position ("<color> 40%"); stops without one
 // are spaced evenly between their positioned neighbours. Returns false if fewer
 // than two colors can be read.
-bool parseLinearGradient(const std::string& value,
-                         std::vector<std::pair<double, Rgba>>& stops,
-                         bool& horizontal) {
-    stops.clear();
-    horizontal = false;
+// A parsed background gradient. Covers linear (by angle), radial (circle from
+// the box centre), and their repeating forms. `stops` are (offset, color) with
+// offset in [0,1] along the gradient line; for repeating gradients the offsets
+// tile beyond [0,1] and are wrapped when sampled.
+struct Gradient {
+    bool has = false;
+    bool radial = false;        // false = linear (by angle)
+    bool repeating = false;
+    double angle = 180.0;       // degrees clockwise from "to top"; 180 = to bottom
+    std::vector<std::pair<double, Rgba>> stops;
+};
+
+// Parses any background gradient into a Gradient descriptor: linear-gradient
+// (by angle or "to <side>"), radial-gradient (circle from the box centre), and
+// their repeating- forms. Stops are (offset, color) with offset along the
+// gradient line; a stop may carry an explicit position ("<color> 40%"), and
+// unpositioned stops are spaced evenly between their positioned neighbours.
+// Returns false for a non-gradient value (plain color, url(), etc.).
+bool parseGradient(const std::string& value, Gradient& g) {
+    g = Gradient{};
     size_t p = value.find('(');
+    if (p == std::string::npos) return false;
+    std::string kind = value.substr(0, p);
+    for (char& c : kind) c = (char)std::tolower((unsigned char)c);
+    bool repeating = false;
+    if (kind.rfind("repeating-", 0) == 0) { repeating = true; kind.erase(0, 10); }
+    if (kind == "linear-gradient") g.radial = false;
+    else if (kind == "radial-gradient") g.radial = true;
+    else return false;
+    g.repeating = repeating;
+    g.has = true;
+
     size_t q = value.rfind(')');
     if (q == std::string::npos || q < p) return false;
     // Split the inside on top-level commas (a color function holds commas too).
@@ -185,18 +211,37 @@ bool parseLinearGradient(const std::string& value,
     }
     for (auto& s : parts) s = trimCopy(s);
     if (parts.empty()) return false;
-    // The first part may be a direction ("to bottom", "45deg") rather than a color.
+
+    // The first part may be a direction ("to bottom", "45deg") for linear, or a
+    // shape ("circle", "ellipse") for radial — either way not a color stop.
     size_t ci = 0;
     std::string first = parts[0];
     for (char& c : first) c = (char)std::tolower((unsigned char)c);
-    bool dir_given = first.rfind("to ", 0) == 0 || first.find("deg") != std::string::npos;
-    // Horizontal axis for to right / to left; vertical otherwise. to left and
-    // to top reverse the stop order (the gradient runs the other way).
-    horizontal = first.find("to right") != std::string::npos ||
-                 first.find("to left") != std::string::npos;
-    bool reverse = first.find("to top") != std::string::npos ||
-                   first.find("to left") != std::string::npos;
-    if (dir_given) ci = 1;
+    if (!g.radial) {
+        // Angle: "<N>deg" clockwise from to-top. Or "to <side>".
+        double ang;
+        char unit = 0;
+        if (std::sscanf(first.c_str(), "%lf%c", &ang, &unit) >= 1 &&
+            first.find("deg") != std::string::npos) {
+            g.angle = ang;
+        } else if (first.rfind("to ", 0) == 0) {
+            g.angle = first.find("right") != std::string::npos ? 90.0
+                    : first.find("left") != std::string::npos ? 270.0
+                    : first.find("top") != std::string::npos ? 0.0
+                    : 180.0;   // to bottom
+        } else {
+            g.angle = 180.0;   // no direction: default to bottom
+        }
+    }
+    // Radial v1: a circle centred in the box; shape/size/position keywords are
+    // consumed here if present but only a centred circle is rendered.
+    if (g.radial && (first == "circle" || first == "ellipse" ||
+                     first.find("at ") != std::string::npos ||
+                     first.find("closest") != std::string::npos ||
+                     first.find("farthest") != std::string::npos)) {
+        ci = 1;
+    }
+
     // Collect (offset, color); offset < 0 marks "not given".
     std::vector<std::pair<double, Rgba>> raw;
     for (size_t i = ci; i < parts.size(); i++) {
@@ -220,11 +265,13 @@ bool parseLinearGradient(const std::string& value,
     if (raw.size() < 2) return false;
     // Assign offsets: keep the explicit ones, space the rest evenly between the
     // brackets they sit in (CSS: even distribution when no position is given).
+    // For a repeating gradient the last stop keeps its actual position — it
+    // defines the tile period, which may be < 1 so the pattern repeats.
     if (raw.front().first < 0) raw.front().first = 0.0;
-    if (raw.back().first < 0) raw.back().first = 1.0;
+    if (!g.repeating && raw.back().first < 0) raw.back().first = 1.0;
+    if (raw.back().first <= 0) raw.back().first = 1.0;
     for (size_t i = 1; i + 1 < raw.size(); i++) {
         if (raw[i].first >= 0) continue;
-        // Find the nearest positioned stop before and after i.
         size_t lo = i - 1, hi = i + 1;
         while (lo > 0 && raw[lo].first < 0) lo--;
         while (hi + 1 < raw.size() && raw[hi].first < 0) hi++;
@@ -236,12 +283,8 @@ bool parseLinearGradient(const std::string& value,
     // Enforce non-decreasing offsets (CSS clamps out-of-order stops).
     for (size_t i = 1; i < raw.size(); i++)
         if (raw[i].first < raw[i - 1].first) raw[i].first = raw[i - 1].first;
-    stops = raw;
-    if (reverse) {
-        for (auto& s : stops) s.first = 1.0 - s.first;
-        std::reverse(stops.begin(), stops.end());
-    }
-    return stops.size() >= 2;
+    g.stops = raw;
+    return g.stops.size() >= 2;
 }
 
 // Parses "box-shadow: <x> <y> <blur> <spread> <color>". The offsets are required
@@ -347,14 +390,8 @@ struct Style {
     double radius = 0;
     double border = 0;
     Rgba border_color{0, 0, 0, 1};
-    // Linear gradient background (background-image: linear-gradient(...)). Stops
-    // are (offset, color) pairs sorted top->bottom, offset in [0,1]. Empty = paint
-    // the flat bg. grad_horizontal: vertical = bands stack top->bottom (to bottom
-    // / to top); horizontal = bands run left->right (to right / to left). Angles
-    // are not modelled and fall back to vertical.
-    bool has_gradient = false;
-    std::vector<std::pair<double, Rgba>> grad_stops;
-    bool grad_horizontal = false;
+    // Linear/radial gradient background. Replaces the flat bg when grad.has.
+    Gradient grad;
     // box-shadow: offset (x, y), blur, spread, color. Drawn behind the box.
     bool has_shadow = false;
     double shadow_x = 0, shadow_y = 0, shadow_blur = 0, shadow_spread = 0;
@@ -685,13 +722,12 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     else if (is("height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.height = x; st.height_pct = p ? x : -1; } }
     else if (is("min-height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.min_height = x; st.min_height_pct = p ? x : -1; } }
     else if (is("background") || is("background-color") || is("background-image")) {
-        // A linear-gradient paints over a flat color (CSS: background-image over
+        // A gradient paints over a flat color (CSS: background-image over
         // background-color). The `background` shorthand can carry either, so try
         // the gradient first and fall back to a flat color.
-        std::vector<std::pair<double, Rgba>> stops;
-        bool gh = false;
-        if (parseLinearGradient(value, stops, gh)) {
-            st.has_gradient = true; st.grad_stops = stops; st.grad_horizontal = gh;
+        Gradient g;
+        if (parseGradient(value, g)) {
+            st.grad = g;
             st.bg = {0, 0, 0, 0};
         }
         else if (!is("background-image")) {
@@ -700,13 +736,10 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
         }
     }
     else if (is("background-image")) {
-        // Only linear-gradient is modelled; other image types (url(), radial-)
-        // don't parse and leave the background unchanged.
-        std::vector<std::pair<double, Rgba>> stops;
-        bool gh = false;
-        if (parseLinearGradient(value, stops, gh)) {
-            st.has_gradient = true; st.grad_stops = stops; st.grad_horizontal = gh;
-        }
+        // Only gradients are modelled; other image types (url()) don't parse and
+        // leave the background unchanged.
+        Gradient g;
+        if (parseGradient(value, g)) st.grad = g;
     }
     else if (is("box-shadow")) {
         double x, y, blur, spread; Rgba c;
@@ -1173,6 +1206,10 @@ struct Node {
     // children) up by it while the box frame and clip stay put. Clamped to
     // [0, content - box] at paint so it can't scroll past the end.
     double scroll_top = 0;
+    // Background gradient, uploaded to a texture once and reused. Generated at
+    // a reduced resolution (gradients are smooth) and scaled to the box.
+    cui_texture grad_tex = 0;
+    bool grad_tex_valid = false;
 };
 
 struct Doc {
@@ -1777,8 +1814,10 @@ struct CuiRenderer::Impl {
 
     ~Impl() {
         // Release every cached <img> texture before the CUI context goes away.
-        for (auto& [id, n] : doc.nodes)
+        for (auto& [id, n] : doc.nodes) {
             if (n.img_tex_valid && ui) cui_image_destroy(ui, n.img_tex);
+            if (n.grad_tex_valid && ui) cui_image_destroy(ui, n.grad_tex);
+        }
         // And every canvas drawImage texture cached by data: URL.
         for (auto& [url, tex] : canvas_img_tex_)
             if (tex != 0 && ui) cui_image_destroy(ui, tex);
@@ -3091,6 +3130,79 @@ struct CuiRenderer::Impl {
         cui_pop_clip(ui);
     }
 
+    // Paints a background gradient (linear by angle, radial from the centre,
+    // repeating variants) by sampling it per pixel into a small RGBA texture,
+    // uploading that once, and drawing it scaled to the element box with the
+    // element's rounded corners. A texture handles every gradient type and
+    // rounded corners uniformly, unlike per-band drawing.
+    void paintGradient(int64_t id) {
+        Node& n = doc.nodes[id];
+        if (n.w <= 0 || n.h <= 0 || !n.style.grad.has) return;
+        const Gradient& g = n.style.grad;
+
+        // Generate the texture once at a reduced resolution — gradients are
+        // smooth, so a modest texture upscaled to the box looks identical and
+        // is cheap to build. Cap the longer side to keep it small.
+        if (!n.grad_tex_valid) {
+            const int kMax = 128;
+            double s = std::min(kMax / std::max(1.0, n.w), kMax / std::max(1.0, n.h));
+            int tw = std::max(1, (int)std::lround(n.w * s));
+            int th = std::max(1, (int)std::lround(n.h * s));
+            std::vector<uint8_t> px((size_t)tw * th * 4);
+
+            // Gradient-line direction (CSS coords, y down). angle is clockwise
+            // from "to top": 0 = up, 90 = right, 180 = down, 270 = left.
+            double a = g.angle * 3.14159265358979 / 180.0;
+            double dx = std::sin(a), dy = -std::cos(a);
+            // Radial: distance from the box centre to the farthest corner is the
+            // radius, so the gradient reaches the corners exactly.
+            double cx = n.w / 2.0, cy = n.h / 2.0;
+            double radius = std::hypot(std::max(cx, n.w - cx), std::max(cy, n.h - cy));
+            double pmin = 0, pmax = 0;
+            if (!g.radial) {
+                const double corners[4][2] = {{0, 0}, {n.w, 0}, {0, n.h}, {n.w, n.h}};
+                for (int i = 0; i < 4; i++) {
+                    double pr = (corners[i][0] - cx) * dx + (corners[i][1] - cy) * dy;
+                    pmin = std::min(pmin, pr); pmax = std::max(pmax, pr);
+                }
+            }
+            double prange = (pmax - pmin) > 0 ? (pmax - pmin) : 1.0;
+            // For a repeating gradient the last stop offset is the tile length
+            // along the projection axis; the pattern repeats every tile.
+            double tile = g.stops.back().first;
+            if (tile <= 0) tile = 1.0;
+
+            for (int py = 0; py < th; py++) {
+                for (int pxi = 0; pxi < tw; pxi++) {
+                    double ux = (pxi + 0.5) / tw * n.w;
+                    double uy = (py + 0.5) / th * n.h;
+                    double t;
+                    if (g.radial) {
+                        t = std::hypot(ux - cx, uy - cy) / radius;
+                    } else {
+                        t = ((ux - cx) * dx + (uy - cy) * dy - pmin) / prange;
+                    }
+                    if (g.repeating) t = t - std::floor(t / tile) * tile;
+                    Rgba c = sampleGradStops(g.stops, t);
+                    uint8_t* p = px.data() + ((size_t)py * tw + pxi) * 4;
+                    p[0] = (uint8_t)std::clamp(c.r * 255.f, 0.f, 255.f);
+                    p[1] = (uint8_t)std::clamp(c.g * 255.f, 0.f, 255.f);
+                    p[2] = (uint8_t)std::clamp(c.b * 255.f, 0.f, 255.f);
+                    p[3] = (uint8_t)std::clamp(c.a * 255.f, 0.f, 255.f);
+                }
+            }
+            n.grad_tex = cui_image_create(ui, tw, th, px.data());
+            n.grad_tex_valid = n.grad_tex != 0;
+            if (!n.grad_tex_valid) return;
+        }
+
+        // Draw the texture scaled to the full box with the rounded corners.
+        cui_rect dst{(float)n.x, (float)n.y, (float)n.w, (float)n.h};
+        cui_rect uv{0, 0, 1, 1};
+        cui_draw_image(ui, n.grad_tex, dst, uv,
+                       CUI_CORNERS((float)n.style.radius), CUI_TRANSPARENT);
+    }
+
     // `content_dy` is the accumulated vertical offset from ancestor scroll
     // containers (0 for a non-scrolled document, so non-scrolling docs are
     // byte-identical to before). The box's own frame (background, border,
@@ -3130,7 +3242,7 @@ struct CuiRenderer::Impl {
             cui_draw_shadow(ui, r, rad, (float)s.shadow_blur, (float)s.shadow_spread,
                             cui_vec2{ (float)s.shadow_x, (float)s.shadow_y },
                             paintColor(s.shadow_color, s.opacity));
-        if ((s.bg.a > 0 || s.has_gradient) && n.w > 0 && n.h > 0) {
+        if ((s.bg.a > 0 || s.grad.has) && n.w > 0 && n.h > 0) {
 #ifdef CUIW_LAYOUT_DEBUG
             if (n.tag == "div" || n.tag == "body")
                 fprintf(stderr, "[paintrect] tag=%s cls=%s css=(%g,%g %gx%g)\n", n.tag.c_str(),
@@ -3139,47 +3251,8 @@ struct CuiRenderer::Impl {
 #endif
             // A gradient replaces the flat fill (the gradient wins when both are
             // set, matching CSS where background-image paints over background-color).
-            if (s.has_gradient && s.grad_horizontal) {
-                // Horizontal: draw thin vertical strips left->right, each filled
-                // with the stop color sampled at the strip's centre. The first
-                // strip carries the left corners and the last the right, so a
-                // rounded box keeps its edge; middle strips are square.
-                const int K = 48;
-                double sw = n.w / (double)K;
-                for (int i = 0; i < K; i++) {
-                    double t = ((double)i + 0.5) / (double)K;
-                    Rgba c = sampleGradStops(s.grad_stops, t);
-                    bool left = (i == 0), right = (i == K - 1);
-                    cui_corners sc{ left ? rad.tl : 0, right ? rad.tr : 0,
-                                    right ? rad.br : 0, left ? rad.bl : 0 };
-                    cui_rect strip{ (float)(n.x + i * sw), (float)n.y,
-                                    (float)sw, (float)n.h };
-                    cui_draw_rect(ui, strip, sc, paintColor(c, s.opacity));
-                }
-                if (s.border > 0)
-                    cui_draw_rect_border(ui, r, rad, CUI_TRANSPARENT,
-                                         paintColor(s.border_color, s.opacity),
-                                         (float)s.border);
-            }
-            else if (s.has_gradient) {
-                // Draw one band per pair of adjacent stops, each a top->bottom
-                // gradient across its slice of the box. The first band carries the
-                // top corners and the last the bottom corners, so the rounded edge
-                // is preserved without a clip; middle bands are square.
-                const auto& st2 = s.grad_stops;
-                size_t nb = st2.size();
-                for (size_t b = 0; b + 1 < nb; b++) {
-                    double y0 = n.y + st2[b].first * n.h;
-                    double y1 = n.y + st2[b + 1].first * n.h;
-                    if (y1 <= y0) continue;
-                    cui_rect band{(float)n.x, (float)y0, (float)n.w, (float)(y1 - y0)};
-                    bool first = (b == 0), last = (b + 2 == nb);
-                    cui_corners bcorner{ first ? rad.tl : 0, first ? rad.tr : 0,
-                                         last ? rad.br : 0, last ? rad.bl : 0 };
-                    cui_draw_rect_gradient(ui, band, bcorner,
-                                           paintColor(st2[b].second, s.opacity),
-                                           paintColor(st2[b + 1].second, s.opacity));
-                }
+            if (s.grad.has) {
+                paintGradient(id);
                 if (s.border > 0)
                     cui_draw_rect_border(ui, r, rad, CUI_TRANSPARENT,
                                          paintColor(s.border_color, s.opacity),
