@@ -12,6 +12,40 @@ decides where everything goes, and tells the tools what to paint.
 It speaks the **same instructions** the Telegram widget host speaks. So if you
 already have an app that uses CUI, you can drop this in and draw widgets yourself.
 
+## Why bother — CUI already draws
+
+CUI is a set of drawing tools: draw a box here, write text there, in pixels you
+counted by hand. That is enough for a few fixed shapes. It gets painful the moment
+a screen has to **respond** — wrap when narrow, grow when the text is longer, move
+when someone taps.
+
+This library is the **brain** on top of those tools. You say what a screen *means*
+("these three buttons sit in a row, wrap if the screen is narrow, the cancel one is
+styled by `.btn`") and it works out every box, every pixel, every frame. With raw
+CUI you would count all of that yourself — and count it again each time the screen
+changes size.
+
+What the brain does that the brush cannot:
+
+- **Lays things out.** Rows, columns, grids, tables, floats, pin-to-corner,
+  percentage sizes, wrap-when-narrow. You describe the relationship; it does the
+  arithmetic — and redoes it when the screen resizes.
+- **Styles by meaning.** A rule like `.title { color: … }` styles every title at
+  once, on every screen. Change the rule once, not forty places.
+- **Animates.** Fade a card in, slide a bar, pulse a dot — on a clock you control,
+  the same every run.
+- **Knows what you tapped.** Because it keeps the shape of the screen, it can tell
+  you which piece a finger landed on. A pile of draw calls cannot.
+- **Draws the same every time.** One saved "good" picture gates every computer, so
+  a change that shifts a single pixel fails the test.
+
+The honest version: the brain is not magic and not a browser. It draws through
+CUI's own brush, so it can only do what that brush allows, and a design that leans
+on something it lacks will look different than in a web browser. What it buys you
+is never hand-counting layout again — and a screen you can actually test.
+
+## What it looks like
+
 ![libcui-widget rendering the same widget document in light and dark](docs/showcase.png)
 
 Here is a little **3D scene** built with it. The screen is flat, but we tilt the
