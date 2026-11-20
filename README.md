@@ -89,6 +89,31 @@ adds. Look at what is doing the work:
 Build it with `python3 tools/showcase_dashboard.py > docs/showcase_dashboard.json &&
 ./build/cuiw-render docs/showcase_dashboard.json docs/showcase_dashboard.png 380 2 dark`.
 
+And here is a **decision flow** — not a linear pipeline, a real flowchart with
+branching. A deploy runs, and two decisions split it: did tests pass, and is this
+prod? Each "no" peels off to a different outcome.
+
+![A deploy decision flow: boxes for deploy, canary and promote; diamond decision nodes for tests pass? and prod?; no branches to roll back and stage](docs/showcase_flow.png)
+
+The **decision diamonds** are inline SVG polygons; the arrows are SVG lines; the
+boxes are styled cards. Nothing was positioned by hand — each shape is placed from
+one centre coordinate, and the yes/no branches read as data.
+
+Build it with `python3 tools/showcase_flow.py > docs/showcase_flow.json &&
+./build/cuiw-render docs/showcase_flow.json docs/showcase_flow.png 360 2 dark`.
+
+### What that means in code
+
+The flow above is **101 render ops from ~160 lines** of generator (including the
+CSS and the helper that places shapes from a centre point).
+
+Draw the same diagram with raw CUI primitives and you place every one of the
+**28 shapes** (6 boxes/diamonds, 6 arrows, ~16 labels) at its own hard-coded
+`x, y, w, h` — plus the app, context and PNG-write bootstrap. Move one box and you
+recount every arrow and label around it by hand. That is the code the brain
+removes: not a fixed multiplier, but the entire coordinate bookkeeping — and the
+risk of it drifting out of sync.
+
 ## No hidden roommates
 
 This toolbox **only needs CUI and the normal C/C++ tools**. There is no hidden
