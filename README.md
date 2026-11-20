@@ -23,6 +23,16 @@ computed as isometric polygons — four stages (source → build → test → de
 with dashed flow arrows, every shape a 2D vector. Regenerate with
 `python3 tools/diorama.py > docs/diorama.json && ./build/cuiw-render docs/diorama.json docs/diorama.png 620 2 dark`.
 
+The same diorama, **animated**: a stream of glowing packets flows along each arc,
+driven by a CSS `@keyframes` opacity animation with a staggered `animation-delay`
+per packet (so the bright point sweeps source → deploy). This frame is a real
+render of the animation frozen mid-cycle:
+
+![An isometric pipeline diorama whose packet stream is animated with @keyframes](docs/flow.png)
+
+Regenerate with `python3 tools/flow.py > docs/flow.json && ./build/cuiw-render docs/flow.json docs/flow.png 620 2 dark 420`
+(the last argument freezes the animation clock at t=420ms, mid-flow).
+
 Your application owns the RenderOps document and calls `cuiw_send` / `cuiw_touch` /
 `cuiw_paint`; libcui-widget turns that into a DOM + CSS cascade + layout + widget
 paint, and draws through libcui's rasterizer.

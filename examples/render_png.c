@@ -6,7 +6,7 @@
  * produces a correct PNG, the library is genuinely standalone: an application
  * that starts with CUI can embed libcui-widget and render widgets itself.
  *
- * Usage: cuiw-render <ops.json> <out.png> [width] [dpr] [theme]
+ * Usage: cuiw-render <ops.json> <out.png> [width] [dpr] [theme] [now_ms]
  *   <ops.json>  a file holding a JSON array of RenderOps (one validated batch,
  *               as dumped by the widget host). Optional; a built-in sample is
  *               used if omitted.
@@ -14,6 +14,8 @@
  *   width       bubble width in CSS px (default 400)
  *   dpr         device pixel ratio (default 2)
  *   theme       "light" | "dark" (default light)
+ *   now_ms      freeze the @keyframes clock at this time (default: t=0). Lets a
+ *               frame with animations be captured mid-flight, deterministically.
  */
 #include "cuiw.h"
 
@@ -102,11 +104,11 @@ int main(int argc, char **argv) {
     double width = argc > 3 ? atof(argv[3]) : 400.0;
     double dpr = argc > 4 ? atof(argv[4]) : 2.0;
     const char *theme = argc > 5 ? argv[5] : "light";
+    double now_ms = argc > 6 ? atof(argv[6]) : -1.0;   /* <0 = leave the clock alone */
     if (width <= 0) width = 400.0;
     if (dpr <= 0) dpr = 2.0;
 
     printf("libcui-widget %s (CUI %s)\n", cuiw_version(), cuiw_cui_version());
-
     /* Report the honest capability matrix, then prove the query round-trips. */
     uint8_t matrix[CUIW_FEATURE__COUNT];
     size_t n = cuiw_feature_matrix(matrix, CUIW_FEATURE__COUNT);
@@ -145,6 +147,21 @@ int main(int argc, char **argv) {
     snprintf(wrapped, src_len + 32, "{\"type\":\"ops\",\"ops\":%s}", src);
     batch = wrapped;
     free(ops);
+
+    /* Freeze the animation clock BEFORE the ops batch. The ops trigger a
+     * relayout that latches each @keyframes start time to the current anim-clock
+     * value, so the clock must already be virtual here — otherwise the start is
+     * latched to wall-clock time and the frame is captured stuck in the delay. */
+    if (now_ms >= 0.0) {
+        char clockmsg[64];
+        snprintf(clockmsg, sizeof clockmsg,
+                 "{\"type\":\"clock\",\"virtual\":true,\"now\":%f}", now_ms);
+        if (!cuiw_send(r, clockmsg)) {
+            fprintf(stderr, "cuiw_send rejected the clock message\n");
+            cuiw_destroy(r);
+            return 1;
+        }
+    }
 
     if (!cuiw_send(r, batch)) {
         fprintf(stderr, "cuiw_send rejected the batch (bad JSON?)\n");
