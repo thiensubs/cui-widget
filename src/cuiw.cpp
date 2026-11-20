@@ -194,6 +194,8 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_INLINE_SVG:
         case CUIW_FEATURE_KEYFRAMES:
         case CUIW_FEATURE_CANVAS:
+        case CUIW_FEATURE_GRADIENTS:
+        case CUIW_FEATURE_BOX_SHADOW:
             return true;
         default:
             return false;
@@ -228,6 +230,8 @@ const char *cuiw_feature_name(cuiw_feature f) {
         case CUIW_FEATURE_OPACITY_COMPOSITING: return "opacity-compositing";
         case CUIW_FEATURE_PSEUDO_CLASSES: return "pseudo-classes";
         case CUIW_FEATURE_CANVAS: return "canvas";
+        case CUIW_FEATURE_GRADIENTS: return "gradients";
+        case CUIW_FEATURE_BOX_SHADOW: return "box-shadow";
         case CUIW_FEATURE_INLINE_SVG: return "inline-svg";
         default: return nullptr;
     }

@@ -126,6 +126,98 @@ bool parseLenPx(const std::string& v, double& out) {
     return parseLenPx(v, out, pct);
 }
 
+// Splits a CSS value into whitespace-separated tokens, keeping the inside of
+// parentheses together — so "rgba(0, 0, 0, 0.2)" is one token even though it
+// holds spaces. Used by box-shadow, whose color may be a function.
+std::vector<std::string> splitParenAware(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    for (char ch : s) {
+        if (ch == '(') { depth++; cur.push_back(ch); }
+        else if (ch == ')') { if (depth > 0) depth--; cur.push_back(ch); }
+        else if (std::isspace((unsigned char)ch) && depth == 0) {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+        } else cur.push_back(ch);
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+std::string trimCopy(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+// Parses "linear-gradient(<direction>, <color>, <color>)". The direction is
+// optional (defaults to "to bottom"); "to top" swaps the two stops. Only a
+// two-stop, vertical gradient is modelled — other directions and extra stops
+// fall back to a top->bottom render. Returns false if two colors can't be read.
+bool parseLinearGradient(const std::string& value, Rgba& top, Rgba& bottom) {
+    size_t p = value.find('(');
+    if (p == std::string::npos) return false;
+    size_t q = value.rfind(')');
+    if (q == std::string::npos || q < p) return false;
+    // Split the inside on top-level commas (a color function holds commas too).
+    std::vector<std::string> parts;
+    {
+        std::string cur;
+        int depth = 0;
+        for (char ch : value.substr(p + 1, q - p - 1)) {
+            if (ch == '(') depth++;
+            else if (ch == ')') { if (depth > 0) depth--; }
+            if (ch == ',' && depth == 0) { parts.push_back(cur); cur.clear(); }
+            else cur.push_back(ch);
+        }
+        if (!cur.empty()) parts.push_back(cur);
+    }
+    for (auto& s : parts) s = trimCopy(s);
+    if (parts.empty()) return false;
+    // The first part may be a direction ("to bottom", "45deg") rather than a color.
+    size_t ci = 0;
+    std::string first = parts[0];
+    for (char& c : first) c = (char)std::tolower((unsigned char)c);
+    bool dir_given = first.rfind("to ", 0) == 0 || first.find("deg") != std::string::npos;
+    bool reverse = first.find("to top") != std::string::npos;
+    if (dir_given) ci = 1;
+    std::vector<Rgba> cols;
+    for (size_t i = ci; i < parts.size(); i++) {
+        Rgba c;
+        if (parseColor(parts[i], c)) cols.push_back(c);
+    }
+    if (cols.size() < 2) return false;
+    top = reverse ? cols.back() : cols.front();
+    bottom = reverse ? cols.front() : cols.back();
+    return true;
+}
+
+// Parses "box-shadow: <x> <y> <blur> <spread> <color>". The offsets are required
+// (CSS); blur and spread are optional and default to 0, the color to a soft black.
+// "inset" is recognised and skipped (not modelled). Returns false without the two
+// offsets, so a bad value degrades to no shadow rather than a stray blob.
+bool parseBoxShadow(const std::string& value, double& x, double& y,
+                    double& blur, double& spread, Rgba& color) {
+    double len[4] = {0, 0, 0, 0};
+    int nl = 0;
+    bool has_color = false;
+    Rgba c{0, 0, 0, 0};
+    for (const std::string& t : splitParenAware(value)) {
+        if (t == "inset") continue;
+        double px;
+        if (parseLenPx(t, px)) { if (nl < 4) len[nl++] = px; continue; }
+        Rgba cc;
+        if (parseColor(t, cc)) { c = cc; has_color = true; }
+    }
+    if (nl < 2) return false;
+    x = len[0]; y = len[1];
+    blur = nl > 2 ? len[2] : 0.0;
+    spread = nl > 3 ? len[3] : 0.0;
+    color = has_color ? c : Rgba{0, 0, 0, 0.35f};
+    return true;
+}
+
 // Splits "a b c d" into 1-4 box values (CSS shorthand order).
 std::vector<double> boxValues(const std::string& v) {
     std::vector<double> out;
@@ -183,6 +275,14 @@ struct Style {
     double radius = 0;
     double border = 0;
     Rgba border_color{0, 0, 0, 1};
+    // Linear gradient background (background-image: linear-gradient(...)). Two
+    // stops rendered top->bottom. has_gradient=false = paint the flat bg.
+    bool has_gradient = false;
+    Rgba grad_top{0, 0, 0, 0}, grad_bottom{0, 0, 0, 0};
+    // box-shadow: offset (x, y), blur, spread, color. Drawn behind the box.
+    bool has_shadow = false;
+    double shadow_x = 0, shadow_y = 0, shadow_blur = 0, shadow_spread = 0;
+    Rgba shadow_color{0, 0, 0, 0};
     double font_size = kDefaultFontSize;
     int font_weight = 400;
     bool bold = false;
@@ -509,6 +609,22 @@ void applyDecl(Style& st, const std::string& name, const std::string& value) {
     else if (is("height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.height = x; st.height_pct = p ? x : -1; } }
     else if (is("min-height")) { double x; bool p; if (parseLenPx(value, x, p)) { st.min_height = x; st.min_height_pct = p ? x : -1; } }
     else if (is("background") || is("background-color")) { Rgba c; if (parseColor(value, c)) st.bg = c; }
+    else if (is("background-image")) {
+        // Only linear-gradient is modelled; other image types (url(), radial-)
+        // don't parse and leave the background unchanged.
+        Rgba top, bottom;
+        if (parseLinearGradient(value, top, bottom)) {
+            st.has_gradient = true; st.grad_top = top; st.grad_bottom = bottom;
+        }
+    }
+    else if (is("box-shadow")) {
+        double x, y, blur, spread; Rgba c;
+        if (parseBoxShadow(value, x, y, blur, spread, c)) {
+            st.has_shadow = true;
+            st.shadow_x = x; st.shadow_y = y; st.shadow_blur = blur;
+            st.shadow_spread = spread; st.shadow_color = c;
+        }
+    }
     else if (is("color")) { Rgba c; if (parseColor(value, c)) st.color = c; }
     else if (is("border-radius")) { double x; if (parseLenPx(value, x)) st.radius = x; }
     else if (is("border")) {
@@ -2768,25 +2884,43 @@ struct CuiRenderer::Impl {
                     n.tag.c_str(), n.x, n.w, scale);
 #endif
         cui_corners rad = CUI_CORNERS((float)s.radius);
-        if (s.bg.a > 0 && n.w > 0 && n.h > 0) {
+        // box-shadow is painted before the box so the box covers the shadow's
+        // center and only the blurred edge shows around it (CSS paints it behind).
+        if (s.has_shadow && n.w > 0 && n.h > 0)
+            cui_draw_shadow(ui, r, rad, (float)s.shadow_blur, (float)s.shadow_spread,
+                            cui_vec2{ (float)s.shadow_x, (float)s.shadow_y },
+                            paintColor(s.shadow_color, s.opacity));
+        if ((s.bg.a > 0 || s.has_gradient) && n.w > 0 && n.h > 0) {
 #ifdef CUIW_LAYOUT_DEBUG
             if (n.tag == "div" || n.tag == "body")
                 fprintf(stderr, "[paintrect] tag=%s cls=%s css=(%g,%g %gx%g)\n", n.tag.c_str(),
                         [&]{ std::string c; for (auto&a:n.attrs) if(a.first=="class") c=a.second; return c; }().c_str(),
                         r.x, r.y, r.w, r.h);
 #endif
-            cui_color bg = paintColor(s.bg, s.opacity);
-            if (s.border > 0)
-                cui_draw_rect_border(ui, r, rad, bg,
-                                     paintColor(s.border_color, s.opacity),
-                                     (float)s.border);
-            else {
+            // A gradient replaces the flat fill (the gradient wins when both are
+            // set, matching CSS where background-image paints over background-color).
+            if (s.has_gradient) {
+                cui_draw_rect_gradient(ui, r, rad,
+                                       paintColor(s.grad_top, s.opacity),
+                                       paintColor(s.grad_bottom, s.opacity));
+                if (s.border > 0)
+                    cui_draw_rect_border(ui, r, rad, CUI_TRANSPARENT,
+                                         paintColor(s.border_color, s.opacity),
+                                         (float)s.border);
+            } else {
+                cui_color bg = paintColor(s.bg, s.opacity);
+                if (s.border > 0)
+                    cui_draw_rect_border(ui, r, rad, bg,
+                                         paintColor(s.border_color, s.opacity),
+                                         (float)s.border);
+                else {
 #ifdef CUIW_LAYOUT_DEBUG
-                if (n.tag == "div")
-                    fprintf(stderr, "[drawrect] card css=(%.0f,%.0f %.0fx%.0f) scale=%g\n",
-                            r.x, r.y, r.w, r.h, scale);
+                    if (n.tag == "div")
+                        fprintf(stderr, "[drawrect] card css=(%.0f,%.0f %.0fx%.0f) scale=%g\n",
+                                r.x, r.y, r.w, r.h, scale);
 #endif
-                cui_draw_rect(ui, r, rad, bg);
+                    cui_draw_rect(ui, r, rad, bg);
+                }
             }
         }
         // overflow: hidden|scroll|auto clips content (text + children) to the

@@ -117,11 +117,12 @@ looks, you re-save the good picture on purpose and commit it with your change.
 
 ## What it can draw
 
-It understands a big, useful slice of CSS — **27 of 27** things we track, so
+It understands a big, useful slice of CSS — **29 of 29** things we track, so
 nothing on the list is missing. You can lay things out in rows and columns, make
 grids and tables, float things, set sizes as percentages, pin things in place,
 round corners, color and style text, fade things in and out, draw little vector
-icons, animate things, and even draw freehand into a box.
+icons, animate things, draw freehand into a box, paint a **gradient**
+background, and drop a soft **shadow** behind a box.
 
 The full list, with what each one does and doesn't cover:
 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
