@@ -196,6 +196,7 @@ bool cuiw_has_feature(cuiw_feature f) {
         case CUIW_FEATURE_CANVAS:
         case CUIW_FEATURE_GRADIENTS:
         case CUIW_FEATURE_BOX_SHADOW:
+        case CUIW_FEATURE_IMAGES:
             return true;
         default:
             return false;
@@ -232,6 +233,7 @@ const char *cuiw_feature_name(cuiw_feature f) {
         case CUIW_FEATURE_CANVAS: return "canvas";
         case CUIW_FEATURE_GRADIENTS: return "gradients";
         case CUIW_FEATURE_BOX_SHADOW: return "box-shadow";
+        case CUIW_FEATURE_IMAGES: return "images";
         case CUIW_FEATURE_INLINE_SVG: return "inline-svg";
         default: return nullptr;
     }

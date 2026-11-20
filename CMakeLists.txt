@@ -43,6 +43,7 @@ add_library(cui-widget STATIC
     src/cuiw.cpp
     src/cui_renderer.cpp
     src/cui_svg.cpp
+    src/cui_img.cpp
 )
 target_compile_features(cui-widget PUBLIC cxx_std_20)
 target_include_directories(cui-widget PUBLIC
@@ -51,6 +52,9 @@ target_include_directories(cui-widget PUBLIC
 )
 # CUI's headers are C; include them as such from our C++ sources.
 target_include_directories(cui-widget SYSTEM PUBLIC "${CUI_ROOT}/include")
+# stb_image.h (PNG/JPEG decode from memory, for <img> data: URLs) lives in CUI's
+# third_party; it is header-only, so pointing the include path at it is enough.
+target_include_directories(cui-widget SYSTEM PUBLIC "${CUI_ROOT}/third_party")
 target_link_libraries(cui-widget PUBLIC cui-rs)
 
 if(APPLE)
@@ -103,5 +107,7 @@ add_executable(cuiw-canvas tests/canvas.c)
 target_link_libraries(cuiw-canvas PRIVATE cui-widget)
 add_executable(cuiw-gradients tests/gradients.c)
 target_link_libraries(cuiw-gradients PRIVATE cui-widget)
+add_executable(cuiw-images tests/images.c)
+target_link_libraries(cuiw-images PRIVATE cui-widget)
 
 message(STATUS "cui-widget: CUI_ROOT=${CUI_ROOT}")

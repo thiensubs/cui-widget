@@ -1,6 +1,7 @@
 #include "twidget/cui_renderer.h"
 
 #include "cui_svg.h"
+#include "cui_img.h"
 
 #include "twidget/json.h"
 
@@ -1064,6 +1065,14 @@ struct Node {
     // <canvas> 2D-context command list (the `canvas` op). Recorded verbatim and
     // replayed at paint into the element box; see paintCanvas. Empty = no drawing.
     std::vector<CanvasCmd> canvas_cmds;
+    // <img>: decoded RGBA8 pixels (row-major, stride = img_w*4), decoded once
+    // from the data: URL in the src attribute and cached here. img_w/h are 0
+    // until the decode succeeds (or fails, which is not retried).
+    std::vector<uint8_t> img_px;
+    int img_w = 0, img_h = 0;
+    bool img_tried = false;           // decode attempted (success or failure)
+    cui_texture img_tex = 0;          // uploaded texture, created lazily at paint
+    bool img_tex_valid = false;
 };
 
 struct Doc {
@@ -1667,6 +1676,9 @@ struct CuiRenderer::Impl {
     }
 
     ~Impl() {
+        // Release every cached <img> texture before the CUI context goes away.
+        for (auto& [id, n] : doc.nodes)
+            if (n.img_tex_valid && ui) cui_image_destroy(ui, n.img_tex);
         if (ui) cui_destroy(ui);
         if (sw) cui_sw_destroy(sw);
     }
@@ -2862,6 +2874,47 @@ struct CuiRenderer::Impl {
         cui_pop_clip(ui);
     }
 
+    // Paints an <img>: decode its data: URL once into RGBA pixels, upload to a
+    // texture on first paint, then draw it fitted into the element box. The
+    // picture is scaled to cover the box preserving aspect ratio and centred
+    // (CSS object-fit: cover), clipped to the box, so it never distorts. A decode
+    // failure is remembered (img_tried) and draws nothing rather than retrying.
+    void paintImage(int64_t id) {
+        Node& n = doc.nodes[id];
+        if (n.w <= 0 || n.h <= 0) return;
+        // Decode once. img_tried guards against re-attempting a URL that failed.
+        if (!n.img_tried) {
+            n.img_tried = true;
+            std::string src = getAttr(n, "src");
+            if (!cuiw_img::decode_data_url(src, n.img_px, n.img_w, n.img_h)) {
+                n.img_px.clear(); n.img_w = 0; n.img_h = 0;
+            }
+        }
+        if (n.img_px.empty() || n.img_w <= 0 || n.img_h <= 0) return;
+        // Upload to a texture once and reuse it across frames.
+        if (!n.img_tex_valid) {
+            n.img_tex = cui_image_create(ui, n.img_w, n.img_h, n.img_px.data());
+            n.img_tex_valid = n.img_tex != 0;
+            if (!n.img_tex_valid) return;
+        }
+        // Fit the picture inside the box preserving aspect ratio (object-fit:
+        // cover) — scale to cover, then centre, so no letterboxing or distortion.
+        double box_ar = n.w / n.h;
+        double img_ar = (double)n.img_w / (double)n.img_h;
+        double dw, dh;
+        if (img_ar > box_ar) { dh = n.h; dw = n.h * img_ar; }
+        else { dw = n.w; dh = n.w / img_ar; }
+        double dx = n.x + (n.w - dw) / 2.0, dy = n.y + (n.h - dh) / 2.0;
+        cui_rect clip{(float)n.x, (float)n.y, (float)n.w, (float)n.h};
+        cui_push_clip(ui, clip);
+        cui_rect dst{(float)dx, (float)dy, (float)dw, (float)dh};
+        // uv is the full 0..1 source rectangle; tint white = draw as-is.
+        cui_rect uv{0, 0, 1, 1};
+        cui_draw_image(ui, n.img_tex, dst, uv,
+                       CUI_CORNERS((float)n.style.radius), CUI_TRANSPARENT);
+        cui_pop_clip(ui);
+    }
+
     void paintNode(int64_t id) {
         Node& n = doc.nodes[id];
         if (n.kind == Node::Comment || n.style.display == Display::None) return;
@@ -2873,6 +2926,9 @@ struct CuiRenderer::Impl {
         // A <canvas> paints its recorded 2D-context commands into its box and
         // has no HTML children, so it does not fall through to the recursion.
         if (n.tag == "canvas") { paintCanvas(id); return; }
+        // An <img> paints its decoded picture into its box and has no HTML
+        // children, so it does not fall through to the recursion.
+        if (n.tag == "img") { paintImage(id); return; }
         Style& s = n.style;
         // Draw in CSS logical points — cui_set_viewport(scale) scales them to
         // device px internally, so pre-multiplying here double-scales (the card

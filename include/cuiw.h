@@ -174,6 +174,7 @@ typedef enum cuiw_feature {
     CUIW_FEATURE_INLINE_SVG,
     CUIW_FEATURE_GRADIENTS,
     CUIW_FEATURE_BOX_SHADOW,
+    CUIW_FEATURE_IMAGES,
     CUIW_FEATURE__COUNT
 } cuiw_feature;
 
