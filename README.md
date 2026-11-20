@@ -25,24 +25,30 @@ styled by `.btn`") and it works out every box, every pixel, every frame. With ra
 CUI you would count all of that yourself — and count it again each time the screen
 changes size.
 
-What the brain does that the brush cannot:
+### How this differs from CUI (and why you'd pick it)
 
-- **Lays things out.** Rows, columns, grids, tables, floats, pin-to-corner,
-  percentage sizes, wrap-when-narrow. You describe the relationship; it does the
-  arithmetic — and redoes it when the screen resizes.
-- **Styles by meaning.** A rule like `.title { color: … }` styles every title at
-  once, on every screen. Change the rule once, not forty places.
-- **Animates.** Fade a card in, slide a bar, pulse a dot — on a clock you control,
-  the same every run.
-- **Knows what you tapped.** Because it keeps the shape of the screen, it can tell
-  you which piece a finger landed on. A pile of draw calls cannot.
-- **Draws the same every time.** One saved "good" picture gates every computer, so
-  a change that shifts a single pixel fails the test.
+[CUI](https://github.com/yappologistic/CUI) is *immediate-mode*: you re-describe the
+whole screen with function calls **every frame**, your variables are the state, and
+you drive it from an app loop inside a window. It ships about 210 finished
+components, which is genuinely great for an interactive desktop app.
 
-The honest version: the brain is not magic and not a browser. It draws through
-CUI's own brush, so it can only do what that brush allows, and a design that leans
-on something it lacks will look different than in a web browser. What it buys you
-is never hand-counting layout again — and a screen you can actually test.
+This library is **retained and data-driven**, which is a different job:
+
+- **The screen is a document, not a frame.** You hand over RenderOps + CSS once.
+  No app loop, no window, no per-frame code. It renders headless to a PNG.
+- **Styling is data.** `.title { color: var(--brand) }` restyles every title on
+  every screen. In CUI that is a colour argument repeated at every call site.
+- **Animation is free.** `@keyframes` run on the engine's own clock — no host code
+  stepping a frame loop.
+- **A widget is a portable artifact.** A JSON document you can store, share or
+  emit. A CUI screen is compiled C.
+- **Byte-identical everywhere.** One committed golden PNG gates Linux, macOS and
+  Windows, so a one-pixel change fails the test.
+
+**Pick CUI** to drive an interactive desktop app with finished components. **Pick
+this** to render a described widget screen the same way everywhere, styled by CSS,
+animated without a frame loop, and testable to the pixel. They are different jobs —
+and this one sits on top of CUI's own rasterizer.
 
 ## What it looks like
 
